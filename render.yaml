@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: my-proxy-server
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn wsgi:wsgi_app
+    envVars:
+      - key: DEBUG_MODE
+        value: false
+      - key: PORT
+        value: 10000
