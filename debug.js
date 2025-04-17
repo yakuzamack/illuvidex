@@ -1,3 +1,21 @@
+const debug = require('debug');
+
+// Create namespaced debuggers
+const debugServer = debug('server');
+const debugRequest = debug('request');
+const debugContent = debug('content');
+const debugCache = debug('cache');
+const debugAuth = debug('auth');
+
+// Export debuggers
+module.exports = {
+    server: debugServer,
+    request: debugRequest,
+    content: debugContent,
+    cache: debugCache,
+    auth: debugAuth
+};
+
 // Debug script to monitor asset loading and prevent error pages
 (function() {
     // Store original fetch and XMLHttpRequest

