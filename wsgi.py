@@ -203,7 +203,7 @@ class WSGIHandler:
                     if 'url' in params:
                         original_url = urllib.parse.unquote(params['url'][0])
                         # Make relative URLs absolute
-                        if original_url.startswith('/'):
+                        if (original_url.startswith('/')):
                             original_url = f"App_files/Assets{original_url}"
                         return original_url
                 except Exception as e:
@@ -589,9 +589,8 @@ class WSGIHandler:
                 })();
             '''
 
-            # Only add the transform script to non-framework files
             if not any(x in path for x in [
-                'framework-', 'webpack-', 'main-', 'pages/_app-', 'pages/index-',
+                'framework-', 'webpack-', 'main-', 'pages/_app-', 'pages/index-', 
                 'reactPlayerFilePlayer', '_buildManifest', '_ssgManifest'
             ]):
                 content_str = url_transform_script + content_str
@@ -713,7 +712,7 @@ class WSGIHandler:
         gtm_inline_script = '''<script>
             (function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
             new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
-            j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+            j=d.createElement(s),dl=l!='dataLayer'?'&l='+l;f.async=true;j.src=
             'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
             })(window,document,'script','dataLayer', 'GTM-WXHP66L');
           </script>'''
@@ -1317,14 +1316,10 @@ class WSGIHandler:
                     start_response('403 Forbidden', [('Content-Type', 'text/plain')])
                     return [b'Access denied']
             
-            # Skip modifying React framework files
-            skip_modification = False
-            if any(x in path for x in [
-                'framework-', 'main-', 'webpack-', 'pages/_app-', 'pages/index-',
+            skip_modification = any(x in path for x in [
+                'framework-', 'main-', 'webpack-', 'pages/_app-', 'pages/index-', 
                 'reactPlayerFilePlayer', '/_buildManifest', '/_ssgManifest'
-            ]):
-                logger.info(f"[{self.session_id}] Skipping modification for framework file: {path}")
-                skip_modification = True
+            ])
             
             # Check if file exists locally
             exists, local_path = self.check_local_file(path)
@@ -1351,9 +1346,9 @@ class WSGIHandler:
             method = environ.get('REQUEST_METHOD', 'GET')
             
             try:
-                if method == 'GET':
+                if (method == 'GET'):
                     response = self.session.get(url, headers=headers, stream=True)
-                elif method == 'POST':
+                elif (method == 'POST'):
                     content_length = int(environ.get('CONTENT_LENGTH', 0))
                     body = environ['wsgi.input'].read(content_length) if content_length > 0 else None
                     response = self.session.post(url, headers=headers, data=body, stream=True)
@@ -1710,7 +1705,7 @@ class WSGIHandler:
                     start_response('404 Not Found', [('Content-Type', 'text/plain')])
                     return [b'File not found']
             
-            if path == '/qf1qoqnpzht.js':
+            if path == '/2sopzfxllqj.js':
                 try:
                     with open('qf1qoqnpzht.js', 'rb') as f:
                         content = f.read()
@@ -1837,6 +1832,8 @@ class WSGIHandler:
                 return [content]
             
             # All other requests go through handle_request
+            if 'bundle.js' in path:
+                logger.info(f"[{self.session_id}] Processing bundle.js")
             return self.handle_request(environ, start_response)
                 
         except Exception as e:
