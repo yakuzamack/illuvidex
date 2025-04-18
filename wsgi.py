@@ -6,7 +6,7 @@ import re
 from urllib.parse import parse_qs, urlparse
 import mimetypes
 import urllib.parse
-import requests
+import urllib3
 from urllib.parse import urljoin
 import io
 import time
@@ -15,6 +15,7 @@ from datetime import datetime
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import gzip
+import requests
 from ip_validator import DEBUG_MODE
 
 # Configure logging
@@ -589,17 +590,31 @@ class WSGIHandler:
                 })();
             '''
 
-            if not any(x in path for x in [
+            # This code block handles the injection of URL transformation script into JavaScript files
+            # It checks if the current path contains any framework or critical files that should not be modified
+            # If the path is not a framework file, it prepends the URL transformation script to the content
+            # The script transforms Google URLs and handles URLSearchParams to block Google redirects
+            
+            # List of framework and critical files that should not be modified
+            framework_files = [
                 'framework-', 'webpack-', 'main-', 'pages/_app-', 'pages/index-', 
-                'reactPlayerFilePlayer', '_buildManifest', '_ssgManifest'
-            ]):
+                'reactPlayerFilePlayer', '_buildManifest', '_ssgManifest',
+                '/_next/static/settings.js', '/_next/static/bif5y1pfgdl.js'
+            ]
+            
+            # Only inject the URL transformation script if this is not a framework file
+            # Check if the path contains any framework files or matches exact paths
+            if not any(x in path for x in framework_files) and path not in framework_files:
                 content_str = url_transform_script + content_str
 
+            # Return the processed content as UTF-8 encoded bytes
             return content_str.encode('utf-8')
             
         except Exception as e:
+            # Log any errors that occur during processing
             logger.error(f"[{self.session_id}] Error processing JS file: {str(e)}")
             logger.error(traceback.format_exc())
+            # Return the original content if processing fails
             return content.encode('utf-8') if isinstance(content, str) else content
 
     def modify_text_content(self, content):
@@ -745,18 +760,37 @@ class WSGIHandler:
         return content.encode('utf-8')
     
     def modify_chunk_content(self, content):
-        """Modify JavaScript chunk content to replace specific text patterns."""
+        """Modify JavaScript chunk content or serve static files directly."""
         if isinstance(content, bytes):
             content = content.decode('utf-8', errors='ignore')
-        
+
         logger.info(f"[{self.session_id}] Modifying chunk content")
-        
-        # Skip modification for React framework chunks
-        if 'framework-d5719ebbbcec5741.js' in content:
+
+        # Skip modification for React framework chunk
+        if getattr(self, "current_chunk_name", "") == 'framework-d5719ebbbcec5741.js':
             logger.info(f"[{self.session_id}] Skipping React framework chunk")
             return content.encode('utf-8')
-        
+
+        # Serve settings.js if this chunk is settings.js
+        if getattr(self, "current_chunk_name", "") == 'settings.js':
+            settings_path = '_next/static/settings.js'
+            try:
+                with open(settings_path, 'rb') as f:
+                    file_content = f.read()
+                logger.info(f"✅ Found and serving: settings.js ({len(file_content)} bytes)")
+                return file_content
+            except FileNotFoundError:
+                logger.warning("❌ File not found: settings.js")
+                return b'File not found'
+
+        # Skip bif5y1pfgdl.js chunk
+        if getattr(self, "current_chunk_name", "") == 'bif5y1pfgdl.js':
+            logger.info(f"[{self.session_id}] Skipping bif5y1pfgdl.js chunk")
+            return content.encode('utf-8')        
         try:
+            # Add console log for chunk loading
+            content += "\nconsole.log('🧠 Custom JS chunk loaded: {}');".format(self.current_chunk_name)
+
             # Find and replace any redirect logic in chunks
             redirect_patterns = [
                 # Direct URL assignments
@@ -1288,6 +1322,17 @@ class WSGIHandler:
         
         # Check if file exists
         exists = os.path.exists(full_path) and os.path.isfile(full_path)
+        
+        # If file doesn't exist in Assets directory and starts with _next, try to find it directly
+        if not exists and clean_path.startswith('_next'):
+            # Get the absolute path of the current directory
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            direct_path = os.path.join(current_dir, clean_path)
+            direct_exists = os.path.exists(direct_path) and os.path.isfile(direct_path)
+            if direct_exists:
+                logger.debug(f"Local file found directly for {path}: full_path={direct_path}")
+                return direct_exists, direct_path
+        
         logger.debug(f"Local file check for {path}: exists={exists}, full_path={full_path}")
         return exists, full_path
 
@@ -1594,7 +1639,7 @@ class WSGIHandler:
                 # Try to serve the JS file directly
                 try:
                     # Use absolute path
-                    file_path = '/Users/home/Desktop/wget/Alex/App_files/Assets/autodrone-a197980a86d93925.js'
+                    file_path = 'App_files/Assets/autodrone-a197980a86d93925.js'
                     logger.info(f"Looking for file at: {file_path}")
                     
                     if os.path.exists(file_path):
@@ -1690,30 +1735,39 @@ class WSGIHandler:
             if path == '/':
                 with open('index.html', 'rb') as f:
                     content = f.read()
+                    
+                
                 content = self.modify_html_content(content)
                 start_response('200 OK', [('Content-Type', 'text/html')])
                 return [content]
             
             # Handle specific JS files
-            if path == '/settings.js':
-                try:
-                    with open('settings.js', 'rb') as f:
-                        content = f.read()
-                    start_response('200 OK', [('Content-Type', 'application/javascript')])
-                    return [content]
-                except FileNotFoundError:
-                    start_response('404 Not Found', [('Content-Type', 'text/plain')])
-                    return [b'File not found']
-            
-            if path == '/2sopzfxllqj.js':
-                try:
-                    with open('qf1qoqnpzht.js', 'rb') as f:
-                        content = f.read()
-                    start_response('200 OK', [('Content-Type', 'application/javascript')])
-                    return [content]
-                except FileNotFoundError:
-                    start_response('404 Not Found', [('Content-Type', 'text/plain')])
-                    return [b'File not found']
+            if path in ['/_next/static/settings.js', '/_next/static/bif5y1pfgdl.js']:
+                # Look in multiple locations for the file
+                possible_paths = [
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), path.lstrip('/')),
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), '_next/static', os.path.basename(path)),
+                    os.path.join(self.directory, path.lstrip('/')),
+                    os.path.join(self.directory, '_next/static', os.path.basename(path))
+                ]
+                
+                # Try each possible path
+                for file_path in possible_paths:
+                    if os.path.exists(file_path):
+                        logger.info(f"Found {path} at: {file_path}")
+                        with open(file_path, 'rb') as f:
+                            content = f.read()
+                        start_response('200 OK', [
+                            ('Content-Type', 'application/javascript'),
+                            ('Access-Control-Allow-Origin', '*'),
+                            ('Cache-Control', 'no-cache')
+                        ])
+                        return [content]
+                
+                # If not found, return a plain 404
+                logger.error(f"Could not find {path} in any location")
+                start_response('404 Not Found', [('Content-Type', 'application/javascript')])
+                return [f"console.error('File not found: {path}');".encode('utf-8')]
             
             # Handle _next directory requests
             if path.startswith('/_next/'):
