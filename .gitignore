@@ -32,3 +32,27 @@ ENV/
 # Application specific
 *.log
 index.html
+# Additional patterns
+_next/static/
+jsfiles/
+images/
+**/chunk.*
+*.js
+*.css
+Data/
+image_cache/
+templates/
+utils/
+*.html
+# Additional patterns
+_next/static/
+jsfiles/
+images/
+**/chunk.*
+*.js
+*.css
+Data/
+image_cache/
+templates/
+utils/
+*.html
