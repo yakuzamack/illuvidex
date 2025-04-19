@@ -26,40 +26,5 @@
     }
 
     // Function to remove loading state
-    function removeLoadingState() {
-        // Remove loading overlay if it exists
-        const loadingOverlay = document.querySelector('.loading-overlay');
-        if (loadingOverlay) {
-            loadingOverlay.remove();
-        }
-
-        // Remove loading class from body
-        document.body.classList.remove('loading');
-
-        // Show main content
-        const mainContent = document.querySelector('main');
-        if (mainContent) {
-            mainContent.style.display = 'block';
-        }
-    }
-
-    // Check assets periodically
-    const checkInterval = setInterval(() => {
-        if (checkAssetsLoaded()) {
-            clearInterval(checkInterval);
-            removeLoadingState();
-        }
-    }, 100);
-
-    // Also check on window load
-    window.addEventListener('load', () => {
-        clearInterval(checkInterval);
-        removeLoadingState();
-    });
-
-    // Force remove loading state after 5 seconds
-    setTimeout(() => {
-        clearInterval(checkInterval);
-        removeLoadingState();
-    }, 5000);
+   
 })(); 

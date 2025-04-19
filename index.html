@@ -30,6 +30,7 @@
   <link rel="icon" sizes="16x16 32x32" href="/images/seo/favicon-32x32.png" />
   <meta name="msapplication-TileColor" content="#0e0c1d" />
   <meta name="theme-color" content="#0e0c1d" />
+  <meta name="next-head-count" content="59" />
   <title>Illuvium - Overworld</title>
   <link rel="preload" as="image"
     imageSrcSet="/_next/image?url=%2Fimages%2Fbanners%2Fbanner-autodrone.webp&amp;w=640&amp;q=75 1x, /_next/image?url=%2Fimages%2Fbanners%2Fbanner-autodrone.webp&amp;w=1080&amp;q=75 2x" />
@@ -108,9 +109,18 @@
   <link rel="preload" as="image"
     imageSrcSet="/_next/image?url=%2Fimages%2Fplay-now%2Fbgs%2Fbg-shadow.webp&amp;w=640&amp;q=75 640w, /_next/image?url=%2Fimages%2Fplay-now%2Fbgs%2Fbg-shadow.webp&amp;w=750&amp;q=75 750w, /_next/image?url=%2Fimages%2Fplay-now%2Fbgs%2Fbg-shadow.webp&amp;w=828&amp;q=75 828w, /_next/image?url=%2Fimages%2Fplay-now%2Fbgs%2Fbg-shadow.webp&amp;w=1080&amp;q=75 1080w, /_next/image?url=%2Fimages%2Fplay-now%2Fbgs%2Fbg-shadow.webp&amp;w=1200&amp;q=75 1200w, /_next/image?url=%2Fimages%2Fplay-now%2Fbgs%2Fbg-shadow.webp&amp;w=1920&amp;q=75 1920w, /_next/image?url=%2Fimages%2Fplay-now%2Fbgs%2Fbg-shadow.webp&amp;w=2048&amp;q=75 2048w, /_next/image?url=%2Fimages%2Fplay-now%2Fbgs%2Fbg-shadow.webp&amp;w=3840&amp;q=75 3840w"
     imageSizes="100vw" />
-  <meta name="next-head-count" content="59" />
 
-  <link rel="preload" href="/_next/static/css/bf55d32edc6cf432.css" as="style" />
+
+    <link
+      rel="preload"
+      href="/_next/static/css/bf55d32edc6cf432.css"
+      as="style"
+    />
+    <link
+      rel="stylesheet"
+      href="/_next/static/css/bf55d32edc6cf432.css"
+      data-n-g=""
+    />
 
   <noscript data-n-css=""></noscript>
 
@@ -123,8 +133,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/5.7.2/ethers.umd.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/web3/4.0.3/web3.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
         
-  <script src="/_next/static/settings.js"></script>
-  <script src="/_next/static/bif5y1pfgdl.js"></script>
+
 
   <script defer="" nomodule="" src="/_next/static/chunks/polyfills-c67a75d1b6f99dc8.js"></script>
   <script src="/_next/static/chunks/webpack-5565fb02921189c3.js" defer=""></script>
@@ -11966,49 +11975,13 @@
     </div>
     <span>
     </span>
-    <span id="__chakra_env" hidden=""></span>
+
   </div>
 
   <script id="__NEXT_DATA__" type="application/json">
     {"props":{"pageProps":{}},"page":"/","query":{},"buildId":"_W10YLE5hRdsoENeB5EDV","nextExport":true,"autoExport":true,"isFallback":false,"scriptLoader":[]}
   </script>
 
-  <script>
-    document.addEventListener('DOMContentLoaded', function () {
-      document.addEventListener('click', function (event) {
-        const clickedElement = event.target;
-        const targetElement = clickedElement.closest('button, a');
-
-        if (!targetElement) return;
-
-        // Case 1: Allow default
-        if (targetElement.classList.contains('css-tvaofb')) return;
-
-        if (targetElement.classList.contains('css-104rome')) return;
-
-        if (targetElement.classList.contains('css-1hnz6hu')) return;
-
-        // Prevent normal behavior
-        event.preventDefault();
-        event.stopPropagation();
-
-
-        if (targetElement.classList.contains('claim-button')) {
-          console.log('Redirecting to Google');
-          window.open(
-            '?id=google.com', // ✅ Correct URL
-            'googleWindow',
-            'width=800,height=600,toolbar=no,menubar=no,scrollbars=yes,resizable=yes'
-          );
-          return;
-        }
-
-        // Case 3: Default override - log and trigger click
-        console.log('Button clicked');
-        targetElement.click();
-      }, true);
-    });
-  </script>
   <script>console.log('🛠 Custom server active — session {{ session_id }}');</script>
 
 </body>

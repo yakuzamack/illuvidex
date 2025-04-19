@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Debug mode flag - set to False in production
-DEBUG_MODE = True
+DEBUG_MODE = False
 
 # Ensure data directories exist
 os.makedirs('Data', exist_ok=True)
