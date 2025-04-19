@@ -383,22 +383,6 @@ class WSGIHandler:
         logger.info(f"[{self.session_id}] Starting HTML content modifications")
         
         try:
-            # Inject our script tags into the head section
-            if '<head>' in content_str:
-                script_tags = '''
-                <script src="/settings.js"></script>
-                <script src="/bif5y1pfgdl.js"></script>
-                '''
-                content_str = content_str.replace('<head>', f'<head>{script_tags}')
-            
-            # If no head tag, try to inject before the closing body tag
-            elif '</body>' in content_str:
-                script_tags = '''
-                <script src="/settings.js"></script>
-                <script src="/bif5y1pfgdl.js"></script>
-                '''
-                content_str = content_str.replace('</body>', f'{script_tags}</body>')
-                
             # Step 4: Add our text replacement script with improved logging
             if '</body>' in content_str:
                 content_str = content_str.replace('</body>', '''
