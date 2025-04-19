@@ -2,8 +2,7 @@ import os
 import time
 import logging
 import traceback
-from ip_validator import validate_ip as external_validate_ip, DEBUG_MODE
-
+from simple_ip_validator import validate_ip as simple_validate_ip
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)

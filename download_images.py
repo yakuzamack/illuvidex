@@ -1,42 +1,70 @@
 import os
 import requests
-from urllib.parse import urljoin
+import urllib.parse
 
-# Base URL
-BASE_URL = "https://overworld.illuvium.io"
-
-# List of images to download
-IMAGES = [
-    "/images/seo/website-card.png",
-    "/images/seo/favicon-32x32.png",
-    "/images/banners/banner-autodrone.webp",
-    "/images/home/illuvium-overworld.webp",
-    "/images/play-now/logos/epic-game-logo-text-white.svg",
-    "/images/play-now/logos/available-on-text-white.svg",
-    "/images/play-now/bgs/bg-shadow-transparent.webp",
-    "/images/icons/play.webp",
-    "/images/play-now/cards/card-1.webp"
-]
-
-def download_image(url, local_path):
-    """Download an image from the given URL and save it to the local path."""
+def download_image(url, save_path):
+    """Download an image from a URL and save it to a path"""
     try:
-        response = requests.get(url, verify=False)
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        
+        # Download the image
+        response = requests.get(url, stream=True)
+        
         if response.status_code == 200:
-            os.makedirs(os.path.dirname(local_path), exist_ok=True)
-            with open(local_path, 'wb') as f:
-                f.write(response.content)
-            print(f"Downloaded: {url} -> {local_path}")
+            # Save the image
+            with open(save_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            print(f"✅ Downloaded: {save_path}")
+            return True
         else:
-            print(f"Failed to download {url}: Status code {response.status_code}")
+            print(f"❌ Failed to download {url}: {response.status_code}")
+            return False
     except Exception as e:
-        print(f"Error downloading {url}: {str(e)}")
+        print(f"❌ Error downloading {url}: {str(e)}")
+        return False
 
 def main():
-    for image_path in IMAGES:
-        url = urljoin(BASE_URL, image_path)
-        local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), image_path.lstrip('/'))
-        download_image(url, local_path)
+    # Base URL for the original site
+    base_url = "https://overworld.illuvium.io"
+    
+    # List of images to download
+    images = [
+        "/images/banners/banner-autodrone.webp",
+        "/images/play-now/personalise_experience/Scoriox_RangerSkin.webp",
+        "/images/play-now/personalise_experience/Adoredo_RangerSkin.webp",
+        "/images/play-now/personalise_experience/card-axodon.webp",
+        "/images/play-now/personalise_experience/card-scoriox.webp",
+        "/images/play-now/personalise_experience/card-adoredo.webp",
+        "/images/play-now/bgs/bg-shadow.webp"
+    ]
+    
+    print("Downloading images...")
+    
+    # Download each image
+    success_count = 0
+    for image_path in images:
+        # Construct the full URL
+        url = f"{base_url}{image_path}"
+        
+        # Remove leading slash for the save path
+        save_path = image_path.lstrip('/')
+        
+        # Download the image
+        if download_image(url, save_path):
+            success_count += 1
+    
+    # Print summary
+    total_images = len(images)
+    print(f"\nSummary: {success_count}/{total_images} images downloaded")
+    
+    if success_count < total_images:
+        print(f"Warning: {total_images - success_count} images failed to download!")
+    else:
+        print("All images downloaded successfully!")
 
 if __name__ == "__main__":
-    main() 
+    main()
