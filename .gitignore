@@ -19,26 +19,16 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
-
-# Logs
-*.log
-access.log
-error.log
-server.log
-
-# Downloaded site
-downloaded-site/
-
-# Virtual Environment
 venv/
 ENV/
 
-# IDE
+# Development files
+.DS_Store
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# OS
-.DS_Store
-Thumbs.db 
+# Application specific
+*.log
+index.html
