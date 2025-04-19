@@ -56,3 +56,9 @@ image_cache/
 templates/
 utils/
 *.html
+_next/static/
+_next/static/
+_next/static/chunks/
+_next/static/chunks/
+_next/static/jsfiles/
+_next/static/jsfiles/
